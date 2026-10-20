@@ -6,6 +6,7 @@ import sys
 import time
 
 from pathlib import Path
+from aiohttp import web
 from dotenv import load_dotenv
 
 if sys.platform == "win32":
@@ -515,10 +516,33 @@ async def callback_unsubscribe(callback: types.CallbackQuery):
     await cmd_list(callback.message)
 
 
+async def run_health_server(port: int):
+    """Легковесный HTTP-сервер для проверки статуса сервиса на Render/Koyeb (порт $PORT)."""
+    async def handle_ping(request):
+        return web.Response(text="OK - Anime Radar Bot is running 24/7!\n", content_type="text/plain")
+
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/health", handle_ping)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"🌐 Health-check HTTP сервер запущен на порту {port}")
+
+
 async def start_bot():
     print("🤖 Запуск интерактивного бота Anime Radar (Hardened v2)...")
     init_sentry("telegram-bot")
     await db.init_schema()
+
+    port_env = os.getenv("PORT")
+    if port_env:
+        try:
+            await run_health_server(int(port_env))
+        except Exception as e:
+            print(f"⚠️ Не удалось запустить health-check сервер: {e}")
 
     await bot.set_my_commands(
         [
