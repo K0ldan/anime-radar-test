@@ -448,7 +448,17 @@ async def callback_subscribe(callback: types.CallbackQuery):
 
     raw_caption = callback.message.caption or callback.message.text or ""
     caption_lines = raw_caption.split("\n") if raw_caption else ["Аниме"]
-    title = caption_lines[0].replace("🎬", "").strip()
+    
+    title = "Аниме"
+    for line in caption_lines:
+        if "🎬" in line:
+            clean = re.sub(r"<[^>]+>", "", line).replace("🎬", "").strip()
+            clean = re.sub(r"\(Серия \d+\)", "", clean).strip()
+            if clean:
+                title = clean
+                break
+    if title == "Аниме":
+        title = caption_lines[0].replace("🎬", "").strip()
 
     is_finished = "Завершено" in raw_caption
     status_val = "FINISHED" if is_finished else "RELEASING"
@@ -456,7 +466,7 @@ async def callback_subscribe(callback: types.CallbackQuery):
     genres = []
     for line in caption_lines:
         if "Жанры:" in line:
-            genres_raw = line.split("Жанры:")[1].strip()
+            genres_raw = re.sub(r"<[^>]+>", "", line).split("Жанры:")[1].strip()
             genres = [g.strip() for g in genres_raw.split(",") if g.strip()]
 
     await db.add_subscription(

@@ -95,6 +95,40 @@ query GetTrackedSchedules($mediaIds: [Int]) {
 }
 """
 
+GRAPHQL_RECENT_AIRING_QUERY = """
+query GetRecentAiringSchedules($airingAt_greater: Int, $airingAt_lesser: Int, $perPage: Int) {
+  Page(page: 1, perPage: $perPage) {
+    airingSchedules(airingAt_greater: $airingAt_greater, airingAt_lesser: $airingAt_lesser, sort: TIME_DESC) {
+      id
+      episode
+      airingAt
+      media {
+        id
+        title {
+          romaji
+          english
+        }
+        averageScore
+        popularity
+        coverImage {
+          extraLarge
+          large
+        }
+        genres
+        studios(isMain: true) {
+          nodes {
+            name
+          }
+        }
+        siteUrl
+        status
+        episodes
+      }
+    }
+  }
+}
+"""
+
 GRAPHQL_QUERY = """
 query GetUpcomingSchedules($perPage: Int) {
   Page(page: 1, perPage: $perPage) {
@@ -210,6 +244,47 @@ class AniListClient:
                 results.append(AiringSchedule.model_validate(raw_item))
             except Exception as e:
                 print(f"⚠️ Ошибка валидации Pydantic: {e}")
+                continue
+        return results
+
+    async def get_recent_airing_schedules(
+        self, hours_back: int = 12, limit: int = 50
+    ) -> list[AiringSchedule]:
+        """
+        Запрашивает серии, которые вышли в эфир за последние `hours_back` часов.
+        Используется для механики «Поймано в эфире» (Live Airing Match).
+        """
+        import time
+
+        now = int(time.time())
+        past = now - hours_back * 3600
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                ANILIST_API_URL,
+                json={
+                    "query": GRAPHQL_RECENT_AIRING_QUERY,
+                    "variables": {
+                        "airingAt_greater": past,
+                        "airingAt_lesser": now,
+                        "perPage": limit,
+                    },
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        raw_schedules = data.get("data", {}).get("Page", {}).get("airingSchedules", [])
+        results: list[AiringSchedule] = []
+        for raw_item in raw_schedules:
+            try:
+                results.append(AiringSchedule.model_validate(raw_item))
+            except Exception as e:
+                print(f"⚠️ Ошибка валидации AiringSchedule: {e}")
                 continue
         return results
 

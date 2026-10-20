@@ -42,6 +42,7 @@ ALTER TABLE tracked_anime ADD COLUMN IF NOT EXISTS status VARCHAR(50);
 ALTER TABLE tracked_anime ADD COLUMN IF NOT EXISTS total_episodes INTEGER;
 ALTER TABLE tracked_anime ADD COLUMN IF NOT EXISTS genres TEXT[];
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_digest_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_live_match_at TIMESTAMP WITH TIME ZONE;
 
 -- 3. Персональные подписки пользователей
 CREATE TABLE IF NOT EXISTS user_subscriptions (
@@ -311,6 +312,46 @@ class Database:
             await conn.execute(
                 """
                 UPDATE users SET last_digest_at = NOW() WHERE telegram_chat_id = $1;
+            """,
+                telegram_chat_id,
+            )
+
+    async def get_users_eligible_for_live_match(
+        self, cooldown_hours: int = 24
+    ) -> list[int]:
+        """
+        Находит пользователей для отправки карточки «Поймано в эфире» (Live Airing Match):
+        1. Имеют хотя бы 1 сохранённый тайтл.
+        2. Все тайтлы в списке уже FINISHED (нет активных онгоингов).
+        3. Карточка эфира не отправлялась последние `cooldown_hours` часов (или ни разу).
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT u.telegram_chat_id
+                FROM users u
+                WHERE EXISTS (
+                    SELECT 1 FROM user_subscriptions s WHERE s.telegram_chat_id = u.telegram_chat_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM user_subscriptions s
+                    JOIN tracked_anime t ON s.anime_id = t.anime_id
+                    WHERE s.telegram_chat_id = u.telegram_chat_id AND (t.status = 'RELEASING' OR t.status IS NULL)
+                )
+                AND (u.last_live_match_at IS NULL OR u.last_live_match_at < NOW() - ($1 || ' hours')::INTERVAL);
+            """,
+                str(cooldown_hours),
+            )
+            return [r["telegram_chat_id"] for r in rows]
+
+    async def mark_user_live_match_sent(self, telegram_chat_id: int):
+        """Обновляет таймстемп отправки live match пользователю."""
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE users SET last_live_match_at = NOW() WHERE telegram_chat_id = $1;
             """,
                 telegram_chat_id,
             )

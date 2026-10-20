@@ -24,7 +24,11 @@ from src.observability import init_sentry
 
 
 async def send_telegram_card_to_chat(
-    chat_id: int, caption: str, photo_url: str, reply_markup: dict
+    chat_id: int,
+    caption: str,
+    photo_url: str,
+    reply_markup: dict,
+    disable_notification: bool = False,
 ):
     """Отправляет карточку конкретному пользователю."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
@@ -34,6 +38,7 @@ async def send_telegram_card_to_chat(
         "caption": caption,
         "parse_mode": "HTML",
         "reply_markup": reply_markup,
+        "disable_notification": disable_notification,
     }
 
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -114,80 +119,124 @@ async def main():
             # 5. Фиксируем отправку серии в Neon (гарантия отсутствия дублей)
             await db.mark_episode_processed(anime_id, ep_num, schedule.airingAt)
 
-        # 6. Умный еженедельный дайджест для пользователей с завершёнными тайтлами
+        # 6. Радар эфира («Поймано в эфире» / Live Airing Match)
+        # Для пользователей, у которых все тайтлы в коллекции завершены:
+        # Проверяем, вышла ли свежая серия в их любимых жанрах, и отправляем TOP-1 без звука.
         try:
-            digest_users = await db.get_users_eligible_for_digest(days_interval=7)
-            if digest_users:
-                print(
-                    f"☕ Найдено пользователей для еженедельного дайджеста: {len(digest_users)}"
+            live_users = await db.get_users_eligible_for_live_match(cooldown_hours=24)
+            if live_users:
+                print(f"📡 Пользователей для 'Радара эфира': {len(live_users)}")
+                recent_airing = await client.get_recent_airing_schedules(
+                    hours_back=24, limit=50
                 )
-                for user_id in digest_users:
+
+                for user_id in live_users:
                     masked_uid = f"{str(user_id)[:4]}***"
                     fav_genres = await db.get_user_favorite_genres(user_id)
                     user_subs = await db.get_user_subscriptions(user_id)
-                    exclude_ids = [s["anime_id"] for s in user_subs]
-                    recs = await client.get_recommendations(
-                        genres=fav_genres if fav_genres else None,
-                        limit=2,
-                        exclude_ids=exclude_ids,
+                    exclude_ids = {s["anime_id"] for s in user_subs}
+
+                    # Отбираем только не добавленные тайтлы с совпадением по жанрам
+                    candidate_schedules = []
+                    for s in recent_airing:
+                        anime = s.media
+                        if anime.id in exclude_ids:
+                            continue
+                        if fav_genres:
+                            matched = any(g in fav_genres for g in anime.genres)
+                            if not matched:
+                                continue
+                        candidate_schedules.append(s)
+
+                    # Сортируем кандидатов по рейтингу (score desc)
+                    candidate_schedules.sort(
+                        key=lambda x: (
+                            x.media.averageScore or 0,
+                            x.media.popularity or 0,
+                        ),
+                        reverse=True,
                     )
-                    if recs:
-                        digest_header = (
-                            "☕ <b>Ваш дайджест рекомендаций:</b>\n"
-                            "Все тайтлы в вашей коллекции уже завершены. "
-                            "По вашим любимым жанрам подобраны свежие онгоинги:"
+
+                    chosen_schedule = (
+                        candidate_schedules[0] if candidate_schedules else None
+                    )
+
+                    # Если в свежем эфире нет совпадений по жанрам, делаем фолбэк на топовую рекомендацию
+                    if not chosen_schedule:
+                        fallback_recs = await client.get_recommendations(
+                            genres=fav_genres if fav_genres else None,
+                            limit=1,
+                            exclude_ids=list(exclude_ids),
                         )
-                        anime = recs[0]
-                        score = (
-                            f"{anime.averageScore / 10:.1f} / 10"
-                            if anime.averageScore
-                            else "Без оценки"
-                        )
-                        genres_str = (
-                            ", ".join(anime.genres[:3])
-                            if anime.genres
-                            else "Не указано"
-                        )
-                        caption = (
-                            f"{digest_header}\n\n"
-                            f"🎬 <b>{anime.display_title}</b>\n"
-                            f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"📌 Статус: <b>🟢 Выходит (Онгоинг)</b>\n"
-                            f"⭐ Рейтинг: <b>{score}</b>\n"
-                            f"🏢 Студия: {anime.primary_studio}\n"
-                            f"🏷 Жанры: {genres_str}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━"
-                        )
-                        markup = {
-                            "inline_keyboard": [
-                                [
-                                    {
-                                        "text": "➕ Отслеживать этот тайтл",
-                                        "callback_data": f"sub:{anime.id}",
-                                    },
-                                    {
-                                        "text": "🌐 Страница на AniList",
-                                        "url": (
-                                            anime.siteUrl
-                                            or f"https://anilist.co/anime/{anime.id}"
-                                        ),
-                                    },
-                                ]
+                        if fallback_recs:
+                            anime = fallback_recs[0]
+                            ep_header = "⚡ <b>Свежий онгоинг в эфире</b>"
+                        else:
+                            continue
+                    else:
+                        anime = chosen_schedule.media
+                        ep_header = f"⚡ <b>Только что вышла {chosen_schedule.episode} серия!</b>"
+
+                    score = (
+                        f"{anime.averageScore / 10:.1f} / 10"
+                        if anime.averageScore
+                        else "Без оценки"
+                    )
+                    genres_str = (
+                        ", ".join(anime.genres[:3]) if anime.genres else "Не указано"
+                    )
+                    studio_str = anime.primary_studio
+
+                    caption = (
+                        f"📡 <b>Радар поймал новинку в эфире!</b>\n\n"
+                        f"{ep_header}\n"
+                        f"🎬 <b>{anime.display_title}</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📌 Статус: <b>🟢 Выходит (Онгоинг)</b>\n"
+                        f"⭐ Рейтинг: <b>{score}</b>\n"
+                        f"🏢 Студия: {studio_str}\n"
+                        f"🏷 Жанры: {genres_str}\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"<i>Все аниме в вашей коллекции завершены — начните новый онгоинг в один клик:</i>"
+                    )
+
+                    markup = {
+                        "inline_keyboard": [
+                            [
+                                {
+                                    "text": "➕ Добавить в отслеживание",
+                                    "callback_data": f"sub:{anime.id}",
+                                },
+                                {
+                                    "text": "🌐 AniList",
+                                    "url": (
+                                        anime.siteUrl
+                                        or f"https://anilist.co/anime/{anime.id}"
+                                    ),
+                                },
                             ]
-                        }
-                        try:
-                            await send_telegram_card_to_chat(
-                                user_id, caption, anime.coverImage.best_quality, markup
-                            )
-                            await db.mark_user_digest_sent(user_id)
-                            print(
-                                f"   ✉️ Дайджест успешно отправлен пользователю [{masked_uid}]"
-                            )
-                            await asyncio.sleep(0.5)
-                        except Exception as e:
-                            print(
-                                f"   ❌ Ошибка отправки дайджеста пользователю [{masked_uid}]: {e}"
-                            )
+                        ]
+                    }
+
+                    try:
+                        await send_telegram_card_to_chat(
+                            user_id,
+                            caption,
+                            anime.coverImage.best_quality,
+                            markup,
+                            disable_notification=True,
+                        )
+                        await db.mark_user_live_match_sent(user_id)
+                        print(
+                            f"   📡 Карточка эфира доставлена пользователю [{masked_uid}]: {anime.display_title}"
+                        )
+                        await asyncio.sleep(0.5)
+                    except Exception as e:
+                        print(
+                            f"   ❌ Ошибка отправки карточки эфира [{masked_uid}]: {e}"
+                        )
+        except Exception as e:
+            print(f"⚠️ Ошибка в блоке 'Радара эфира': {e}")
         except Exception as e:
             print(f"⚠️ Ошибка обработки дайджестов: {e}")
 
