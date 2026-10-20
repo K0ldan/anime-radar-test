@@ -278,44 +278,6 @@ class Database:
             )
             return [r["genre"] for r in rows]
 
-    async def get_users_eligible_for_digest(self, days_interval: int = 7) -> list[int]:
-        """
-        Находит пользователей для отправки еженедельного дайджеста:
-        1. Имеют хотя бы 1 сохранённый тайтл.
-        2. Все тайтлы в списке уже FINISHED (нет онгоингов).
-        3. Дайджест не отправлялся последние N дней (или ни разу).
-        """
-        pool = await self.get_pool()
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT u.telegram_chat_id
-                FROM users u
-                WHERE EXISTS (
-                    SELECT 1 FROM user_subscriptions s WHERE s.telegram_chat_id = u.telegram_chat_id
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM user_subscriptions s
-                    JOIN tracked_anime t ON s.anime_id = t.anime_id
-                    WHERE s.telegram_chat_id = u.telegram_chat_id AND (t.status = 'RELEASING' OR t.status IS NULL)
-                )
-                AND (u.last_digest_at IS NULL OR u.last_digest_at < NOW() - ($1 || ' days')::INTERVAL);
-            """,
-                str(days_interval),
-            )
-            return [r["telegram_chat_id"] for r in rows]
-
-    async def mark_user_digest_sent(self, telegram_chat_id: int):
-        """Обновляет таймстемп отправки последнего дайджеста пользователю."""
-        pool = await self.get_pool()
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE users SET last_digest_at = NOW() WHERE telegram_chat_id = $1;
-            """,
-                telegram_chat_id,
-            )
-
     async def get_users_eligible_for_live_match(
         self, cooldown_hours: int = 24
     ) -> list[int]:
@@ -355,14 +317,3 @@ class Database:
             """,
                 telegram_chat_id,
             )
-
-
-if __name__ == "__main__":
-
-    async def test():
-        db = Database()
-        await db.init_schema()
-        print("✅ Пул соединений и схема БД проверены!")
-        await db.close()
-
-    asyncio.run(test())

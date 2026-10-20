@@ -1,3 +1,5 @@
+import time
+
 import httpx
 from src.models.anime import AiringSchedule, Media
 
@@ -254,8 +256,6 @@ class AniListClient:
         Запрашивает серии, которые вышли в эфир за последние `hours_back` часов.
         Используется для механики «Поймано в эфире» (Live Airing Match).
         """
-        import time
-
         now = int(time.time())
         past = now - hours_back * 3600
 

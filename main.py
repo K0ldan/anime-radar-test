@@ -237,8 +237,6 @@ async def main():
                         )
         except Exception as e:
             print(f"⚠️ Ошибка в блоке 'Радара эфира': {e}")
-        except Exception as e:
-            print(f"⚠️ Ошибка обработки дайджестов: {e}")
 
         # 7. Data Retention Policy (Самоочистка старых логов > 90 дней)
         try:
