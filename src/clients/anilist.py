@@ -25,6 +25,8 @@ query SearchAnime($search: String, $perPage: Int) {
         }
       }
       siteUrl
+      status
+      episodes
     }
   }
 }
@@ -56,6 +58,8 @@ query GetTrackedSchedules($mediaIds: [Int]) {
           }
         }
         siteUrl
+        status
+        episodes
       }
     }
   }
@@ -88,6 +92,8 @@ query GetUpcomingSchedules($perPage: Int) {
           }
         }
         siteUrl
+        status
+        episodes
       }
     }
   }

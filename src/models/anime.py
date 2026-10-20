@@ -39,6 +39,8 @@ class Media(BaseModel):
     studios: StudioConnection = Field(default_factory=StudioConnection)
     coverImage: CoverImage
     siteUrl: str | None = None
+    status: str | None = None
+    episodes: int | None = None
 
     @property
     def display_title(self) -> str:
@@ -49,6 +51,21 @@ class Media(BaseModel):
         if self.studios.nodes:
             return self.studios.nodes[0].name
         return "Не указана"
+
+    @property
+    def status_label(self) -> str:
+        mapping = {
+            "RELEASING": "🟢 Выходит (Онгоинг)",
+            "FINISHED": "🏁 Завершено (Все серии вышли)",
+            "NOT_YET_RELEASED": "⏳ Скоро выйдет (Анонс)",
+            "CANCELLED": "❌ Отменено",
+            "HIATUS": "⏸️ На паузе",
+        }
+        return mapping.get(self.status, self.status or "Статус уточняется")
+
+    @property
+    def is_finished(self) -> bool:
+        return self.status == "FINISHED"
 
     @property
     def rating_badge(self) -> str:

@@ -139,7 +139,13 @@ async def cmd_list(message: types.Message):
 
     for idx, s in enumerate(subs, 1):
         safe_title = html.escape(s["title"])
-        text += f"{idx}. <b><a href='{s['site_url']}'>{safe_title}</a></b>\n"
+        status = s.get("status")
+        status_badge = (
+            " 🏁 <i>(Завершено)</i>" if status == "FINISHED" else " 🟢 <i>(Онгоинг)</i>"
+        )
+        text += (
+            f"{idx}. <b><a href='{s['site_url']}'>{safe_title}</a></b>{status_badge}\n"
+        )
         keyboard_buttons.append(
             [
                 InlineKeyboardButton(
@@ -265,9 +271,18 @@ async def perform_search(message: types.Message, query: str):
         studio = html.escape(anime.primary_studio)
         photo_url = anime.coverImage.best_quality
 
+        status_label = html.escape(anime.status_label)
+        episodes_info = f" (всего серий: {anime.episodes})" if anime.episodes else ""
+        button_text = (
+            "📌 В коллекцию (Завершено)"
+            if anime.is_finished
+            else "➕ Отслеживать новые серии"
+        )
+
         caption = (
             f"🎬 <b>{safe_title}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 Статус: <b>{status_label}</b>{episodes_info}\n"
             f"⭐ Рейтинг: <b>{score}</b>\n"
             f"🏢 Студия: {studio}\n"
             f"🏷 Жанры: {genres}\n"
@@ -278,7 +293,7 @@ async def perform_search(message: types.Message, query: str):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="➕ Отслеживать этот тайтл",
+                        text=button_text,
                         callback_data=f"sub:{anime.id}",
                     )
                 ],
@@ -331,10 +346,12 @@ async def callback_subscribe(callback: types.CallbackQuery):
 
     anime_id = int(callback.data.split(":")[1])
 
-    caption_lines = (
-        callback.message.caption.split("\n") if callback.message.caption else ["Аниме"]
-    )
+    raw_caption = callback.message.caption or callback.message.text or ""
+    caption_lines = raw_caption.split("\n") if raw_caption else ["Аниме"]
     title = caption_lines[0].replace("🎬", "").strip()
+
+    is_finished = "Завершено" in raw_caption
+    status_val = "FINISHED" if is_finished else "RELEASING"
 
     await db.add_subscription(
         telegram_chat_id=chat_id,
@@ -342,12 +359,23 @@ async def callback_subscribe(callback: types.CallbackQuery):
         title=title,
         site_url=f"https://anilist.co/anime/{anime_id}",
         cover_image_url="",
+        status=status_val,
     )
 
-    await callback.answer("✅ Добавлено в отслеживание!", show_alert=True)
+    if is_finished:
+        reply_msg = (
+            f"🎉 <b>«{html.escape(title)}»</b> добавлен в вашу коллекцию!\n\n"
+            f"ℹ️ <i>Обратите внимание: показ этого сериала уже завершён, новые серии не выходят.</i>"
+        )
+    else:
+        reply_msg = (
+            f"🎉 <b>«{html.escape(title)}»</b> добавлен в ваш список отслеживания!\n"
+            f"Теперь вы будете получать уведомления о выходе новых серий."
+        )
+
+    await callback.answer("✅ Добавлено!", show_alert=True)
     await callback.message.reply(
-        f"🎉 <b>«{html.escape(title)}»</b> добавлен в ваш список отслеживания!\n"
-        f"Теперь вы будете получать уведомления о выходе новых серий.",
+        reply_msg,
         parse_mode="HTML",
         reply_markup=MAIN_KEYBOARD,
     )

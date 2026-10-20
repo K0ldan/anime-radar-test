@@ -33,8 +33,13 @@ CREATE TABLE IF NOT EXISTS tracked_anime (
     title VARCHAR(500) NOT NULL,
     site_url VARCHAR(500),
     cover_image_url VARCHAR(500),
+    status VARCHAR(50),
+    total_episodes INTEGER,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+ALTER TABLE tracked_anime ADD COLUMN IF NOT EXISTS status VARCHAR(50);
+ALTER TABLE tracked_anime ADD COLUMN IF NOT EXISTS total_episodes INTEGER;
 
 -- 3. Персональные подписки пользователей
 CREATE TABLE IF NOT EXISTS user_subscriptions (
@@ -116,33 +121,38 @@ class Database:
         title: str,
         site_url: str,
         cover_image_url: str,
+        status: str | None = None,
+        total_episodes: int | None = None,
     ):
         """Добавляет аниме в каталог и оформляет подписку."""
         pool = await self.get_pool()
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    """
-                    INSERT INTO tracked_anime (anime_id, title, site_url, cover_image_url)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (anime_id) DO UPDATE 
-                    SET title = EXCLUDED.title, site_url = EXCLUDED.site_url, cover_image_url = EXCLUDED.cover_image_url;
-                """,
-                    anime_id,
-                    title,
-                    site_url,
-                    cover_image_url,
-                )
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                """
+                INSERT INTO tracked_anime (anime_id, title, site_url, cover_image_url, status, total_episodes)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (anime_id) DO UPDATE 
+                SET title = EXCLUDED.title, site_url = EXCLUDED.site_url, cover_image_url = EXCLUDED.cover_image_url,
+                    status = COALESCE(EXCLUDED.status, tracked_anime.status),
+                    total_episodes = COALESCE(EXCLUDED.total_episodes, tracked_anime.total_episodes);
+            """,
+                anime_id,
+                title,
+                site_url,
+                cover_image_url,
+                status,
+                total_episodes,
+            )
 
-                await conn.execute(
-                    """
-                    INSERT INTO user_subscriptions (telegram_chat_id, anime_id)
-                    VALUES ($1, $2)
-                    ON CONFLICT (telegram_chat_id, anime_id) DO NOTHING;
-                """,
-                    telegram_chat_id,
-                    anime_id,
-                )
+            await conn.execute(
+                """
+                INSERT INTO user_subscriptions (telegram_chat_id, anime_id)
+                VALUES ($1, $2)
+                ON CONFLICT (telegram_chat_id, anime_id) DO NOTHING;
+            """,
+                telegram_chat_id,
+                anime_id,
+            )
 
     async def remove_subscription(self, telegram_chat_id: int, anime_id: int):
         """Удаляет подписку пользователя на тайтл."""
@@ -163,7 +173,7 @@ class Database:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT t.anime_id, t.title, t.site_url, t.cover_image_url, s.created_at
+                SELECT t.anime_id, t.title, t.site_url, t.cover_image_url, t.status, t.total_episodes, s.created_at
                 FROM user_subscriptions s
                 JOIN tracked_anime t ON s.anime_id = t.anime_id
                 WHERE s.telegram_chat_id = $1

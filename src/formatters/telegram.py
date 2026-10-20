@@ -24,8 +24,18 @@ def format_telegram_card(schedule: AiringSchedule) -> tuple[str, str, dict[str, 
         html.escape(", ".join(media.genres[:3])) if media.genres else "Не указано"
     )
 
+    # Определение заголовка (обычная серия или финал сезона)
+    ep_str = f"{schedule.episode}"
+    if media.episodes:
+        ep_str += f" из {media.episodes}"
+
+    if media.episodes and schedule.episode >= media.episodes:
+        header = f"🔥 <b>ФИНАЛ СЕЗОНА: {ep_str} серия!</b>"
+    else:
+        header = f"🎬 <b>Скоро выйдет {ep_str}-я серия!</b>"
+
     caption = (
-        f"🎬 <b>Скоро выйдет {schedule.episode}-я серия!</b>\n"
+        f"{header}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📺 <b>{safe_title}</b>\n\n"
         f"{media.rating_badge}\n\n"
