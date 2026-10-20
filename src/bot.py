@@ -7,6 +7,7 @@ import time
 
 from pathlib import Path
 from aiohttp import web
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from dotenv import load_dotenv
 
 if sys.platform == "win32":
@@ -516,34 +517,11 @@ async def callback_unsubscribe(callback: types.CallbackQuery):
     await cmd_list(callback.message)
 
 
-async def run_health_server(port: int):
-    """Легковесный HTTP-сервер для проверки статуса сервиса на Render/Koyeb (порт $PORT)."""
-    async def handle_ping(request):
-        return web.Response(text="OK - Anime Radar Bot is running 24/7!\n", content_type="text/plain")
-
-    app = web.Application()
-    app.router.add_get("/", handle_ping)
-    app.router.add_get("/health", handle_ping)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"🌐 Health-check HTTP сервер запущен на порту {port}")
+WEBHOOK_PATH = "/webhook"
 
 
-async def start_bot():
-    print("🤖 Запуск интерактивного бота Anime Radar (Hardened v2)...")
-    init_sentry("telegram-bot")
-    await db.init_schema()
-
-    port_env = os.getenv("PORT")
-    if port_env:
-        try:
-            await run_health_server(int(port_env))
-        except Exception as e:
-            print(f"⚠️ Не удалось запустить health-check сервер: {e}")
-
+async def setup_bot_commands():
+    """Регистрирует интерактивное меню команд в Telegram UI."""
     await bot.set_my_commands(
         [
             BotCommand(command="start", description="Перезапустить бота и меню"),
@@ -556,13 +534,75 @@ async def start_bot():
         ]
     )
 
-    print("✅ Кнопки и команды обновлены. Бот слушает сообщения!")
-    try:
-        await dp.start_polling(bot)
-    finally:
-        await bot.session.close()
-        await db.close()
+
+async def on_startup():
+    """Хук инициализации при старте сервиса."""
+    print("🤖 Запуск интерактивного бота Anime Radar (Production Webhook Engine)...")
+    init_sentry("telegram-bot")
+    await db.init_schema()
+    await setup_bot_commands()
+
+    webhook_host = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("WEBHOOK_URL")
+    if webhook_host:
+        webhook_url = f"{webhook_host.rstrip('/')}{WEBHOOK_PATH}"
+        await bot.set_webhook(webhook_url, drop_pending_updates=True)
+        print(f"🚀 Telegram Webhook успешно установлен: {webhook_url}")
+
+
+async def on_shutdown():
+    """Хук корректного завершения соединений."""
+    print("🛑 Остановка сервиса...")
+    webhook_host = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("WEBHOOK_URL")
+    if webhook_host:
+        try:
+            await bot.delete_webhook()
+        except Exception:
+            pass
+    await bot.session.close()
+    await db.close()
+
+
+def main():
+    webhook_host = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("WEBHOOK_URL")
+    port = int(os.getenv("PORT", "8080"))
+
+    if webhook_host:
+        # === 1. Режим Webhook для облачного продакшена (Render.com) ===
+        # Telegram сам отправляет входящие запросы прямо на сервер Render!
+        app = web.Application()
+
+        async def handle_ping(request):
+            return web.Response(
+                text="OK - Anime Radar Webhook Bot is active 24/7!\n",
+                content_type="text/plain",
+            )
+
+        app.router.add_get("/", handle_ping)
+        app.router.add_get("/health", handle_ping)
+
+        dp.startup.register(on_startup)
+        dp.shutdown.register(on_shutdown)
+
+        webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+        webhook_handler.register(app, path=WEBHOOK_PATH)
+        setup_application(app, dp, bot=bot)
+
+        print(
+            f"🌐 Запуск Webhook-сервера на порту {port} (Внешний адрес: {webhook_host})..."
+        )
+        web.run_app(app, host="0.0.0.0", port=port)
+    else:
+        # === 2. Режим Long-Polling для локальной разработки на ПК ===
+        async def run_local_polling():
+            await on_startup()
+            print("✅ Бот слушает сообщения в режиме Polling...")
+            try:
+                await dp.start_polling(bot)
+            finally:
+                await on_shutdown()
+
+        asyncio.run(run_local_polling())
 
 
 if __name__ == "__main__":
-    asyncio.run(start_bot())
+    main()
