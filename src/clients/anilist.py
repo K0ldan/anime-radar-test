@@ -33,9 +33,9 @@ query SearchAnime($search: String, $perPage: Int) {
 """
 
 GRAPHQL_RECOMMENDATIONS_QUERY = """
-query GetRecommendations($genres: [String], $perPage: Int) {
+query GetRecommendations($genre: String, $perPage: Int) {
   Page(page: 1, perPage: $perPage) {
-    media(genre_in: $genres, status: RELEASING, sort: [SCORE_DESC, POPULARITY_DESC], type: ANIME) {
+    media(genre: $genre, status: RELEASING, sort: [SCORE_DESC, POPULARITY_DESC], type: ANIME) {
       id
       title {
         romaji
@@ -251,9 +251,10 @@ class AniListClient:
         Исключает тайтлы, которые пользователь уже отслеживает.
         """
         exclude_set = set(exclude_ids or [])
+        target_genre = genres[0] if genres and len(genres) > 0 else None
         variables: dict = {"perPage": limit + len(exclude_set) + 5}
-        if genres:
-            variables["genres"] = genres[:3]
+        if target_genre:
+            variables["genre"] = target_genre
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
@@ -279,4 +280,14 @@ class AniListClient:
             except Exception as e:
                 print(f"⚠️ Ошибка валидации Media рекомендации: {e}")
                 continue
+
+        # Если по жанру вернулось мало, добираем из общего топа актуальных онгоингов
+        if len(results) < limit and target_genre is not None:
+            fallback = await self.get_recommendations(
+                genres=None,
+                limit=limit - len(results),
+                exclude_ids=list(exclude_set) + [r.id for r in results],
+            )
+            results.extend(fallback)
+
         return results
