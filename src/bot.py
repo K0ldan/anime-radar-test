@@ -71,7 +71,11 @@ def check_rate_limit(user_id: int, cooldown: float = RATE_LIMIT_COOLDOWN) -> boo
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📋 Мои подписки"), KeyboardButton(text="🔍 Найти аниме")],
-        [KeyboardButton(text="⚡ Проверить релизы"), KeyboardButton(text="ℹ️ Помощь")],
+        [
+            KeyboardButton(text="⚡ Проверить релизы"),
+            KeyboardButton(text="🎲 Что посмотреть?"),
+        ],
+        [KeyboardButton(text="ℹ️ Помощь")],
     ],
     resize_keyboard=True,
     persistent=True,
@@ -99,8 +103,9 @@ async def cmd_help(message: types.Message):
     text = (
         "📖 <b>Справка по боту:</b>\n\n"
         "🔍 <b>Поиск аниме:</b> напишите <code>/track Название</code> или просто отправьте название тайтла в чат (например: <i>Solo Leveling</i>).\n"
-        "📋 <b>Мои подписки:</b> покажет все ваши сохраненные аниме с возможностью удаления.\n"
-        "⚡ <b>Проверить релизы:</b> запустить проверку актуального расписания прямо сейчас."
+        "📋 <b>Мои подписки:</b> покажет все ваши сохраненные аниме со статусами (Онгоинг / Завершено) и кнопками удаления.\n"
+        "⚡ <b>Проверить релизы:</b> запустить проверку актуального расписания прямо сейчас.\n"
+        "🎲 <b>Что посмотреть?:</b> персональные рекомендации горячих онгоингов на основе жанров вашей коллекции."
     )
     await message.answer(text, parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
 
@@ -317,6 +322,101 @@ async def perform_search(message: types.Message, query: str):
             await message.answer(text=caption, parse_mode="HTML", reply_markup=keyboard)
 
 
+@dp.message(Command("recommend"))
+@dp.message(F.text == "🎲 Что посмотреть?")
+async def btn_recommendations(message: types.Message):
+    """Персональный рекомендательный движок на основе жанров коллекции."""
+    chat_id = message.chat.id
+    if not check_rate_limit(chat_id, cooldown=2.0):
+        await message.answer("⏳ Подождите пару секунд перед следующим подбором.")
+        return
+
+    wait_msg = await message.answer("🔄 Подбираю лучшие онгоинги по вашим вкусам...")
+    fav_genres = await db.get_user_favorite_genres(chat_id)
+    subs = await db.get_user_subscriptions(chat_id)
+    exclude_ids = [s["anime_id"] for s in subs]
+
+    try:
+        recs = await anilist.get_recommendations(
+            genres=fav_genres if fav_genres else None,
+            limit=2,
+            exclude_ids=exclude_ids,
+        )
+    except Exception as e:
+        await wait_msg.edit_text(f"❌ Ошибка подбора рекомендаций: {e}")
+        return
+
+    if not recs:
+        await wait_msg.edit_text(
+            "😔 К сожалению, сейчас не нашлось подходящих онгоингов."
+        )
+        return
+
+    await wait_msg.delete()
+
+    genre_note = (
+        f"<i>(на основе любимых жанров вашей коллекции: {', '.join(fav_genres[:3])})</i>"
+        if fav_genres
+        else "<i>(топ популярных онгоингов сезона)</i>"
+    )
+
+    await message.answer(
+        f"💡 <b>Рекомендованные онгоинги для вас:</b>\n{genre_note}",
+        parse_mode="HTML",
+    )
+
+    for anime in recs:
+        safe_title = html.escape(anime.display_title)
+        score = (
+            f"{anime.averageScore / 10:.1f} / 10"
+            if anime.averageScore
+            else "Без оценки"
+        )
+        genres = (
+            html.escape(", ".join(anime.genres[:3])) if anime.genres else "Не указано"
+        )
+        studio = html.escape(anime.primary_studio)
+        photo_url = anime.coverImage.best_quality
+
+        caption = (
+            f"🎬 <b>{safe_title}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 Статус: <b>🟢 Выходит (Онгоинг)</b>\n"
+            f"⭐ Рейтинг: <b>{score}</b>\n"
+            f"🏢 Студия: {studio}\n"
+            f"🏷 Жанры: {genres}\n"
+            f"━━━━━━━━━━━━━━━━━━━━"
+        )
+
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="➕ Отслеживать этот тайтл",
+                        callback_data=f"sub:{anime.id}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🌐 Страница на AniList",
+                        url=anime.siteUrl or f"https://anilist.co/anime/{anime.id}",
+                    )
+                ],
+            ]
+        )
+
+        try:
+            await message.answer_photo(
+                photo=photo_url,
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            await asyncio.sleep(0.5)
+        except Exception:
+            await message.answer(text=caption, parse_mode="HTML", reply_markup=keyboard)
+
+
 @dp.message(Command("track"))
 async def cmd_track(message: types.Message, command: CommandObject):
     query = command.args
@@ -353,6 +453,12 @@ async def callback_subscribe(callback: types.CallbackQuery):
     is_finished = "Завершено" in raw_caption
     status_val = "FINISHED" if is_finished else "RELEASING"
 
+    genres = []
+    for line in caption_lines:
+        if "Жанры:" in line:
+            genres_raw = line.split("Жанры:")[1].strip()
+            genres = [g.strip() for g in genres_raw.split(",") if g.strip()]
+
     await db.add_subscription(
         telegram_chat_id=chat_id,
         anime_id=anime_id,
@@ -360,6 +466,7 @@ async def callback_subscribe(callback: types.CallbackQuery):
         site_url=f"https://anilist.co/anime/{anime_id}",
         cover_image_url="",
         status=status_val,
+        genres=genres if genres else None,
     )
 
     if is_finished:
@@ -407,6 +514,9 @@ async def start_bot():
             BotCommand(command="start", description="Перезапустить бота и меню"),
             BotCommand(command="list", description="Мои отслеживаемые аниме"),
             BotCommand(command="track", description="Найти аниме по названию"),
+            BotCommand(
+                command="recommend", description="Что посмотреть? (Рекомендации)"
+            ),
             BotCommand(command="help", description="Справка по командам"),
         ]
     )

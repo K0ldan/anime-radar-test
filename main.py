@@ -114,7 +114,84 @@ async def main():
             # 5. Фиксируем отправку серии в Neon (гарантия отсутствия дублей)
             await db.mark_episode_processed(anime_id, ep_num, schedule.airingAt)
 
-        # 6. Data Retention Policy (Самоочистка старых логов > 90 дней)
+        # 6. Умный еженедельный дайджест для пользователей с завершёнными тайтлами
+        try:
+            digest_users = await db.get_users_eligible_for_digest(days_interval=7)
+            if digest_users:
+                print(
+                    f"☕ Найдено пользователей для еженедельного дайджеста: {len(digest_users)}"
+                )
+                for user_id in digest_users:
+                    masked_uid = f"{str(user_id)[:4]}***"
+                    fav_genres = await db.get_user_favorite_genres(user_id)
+                    user_subs = await db.get_user_subscriptions(user_id)
+                    exclude_ids = [s["anime_id"] for s in user_subs]
+                    recs = await client.get_recommendations(
+                        genres=fav_genres if fav_genres else None,
+                        limit=2,
+                        exclude_ids=exclude_ids,
+                    )
+                    if recs:
+                        digest_header = (
+                            "☕ <b>Ваш дайджест рекомендаций:</b>\n"
+                            "Все тайтлы в вашей коллекции уже завершены. "
+                            "По вашим любимым жанрам подобраны свежие онгоинги:"
+                        )
+                        anime = recs[0]
+                        score = (
+                            f"{anime.averageScore / 10:.1f} / 10"
+                            if anime.averageScore
+                            else "Без оценки"
+                        )
+                        genres_str = (
+                            ", ".join(anime.genres[:3])
+                            if anime.genres
+                            else "Не указано"
+                        )
+                        caption = (
+                            f"{digest_header}\n\n"
+                            f"🎬 <b>{anime.display_title}</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                            f"📌 Статус: <b>🟢 Выходит (Онгоинг)</b>\n"
+                            f"⭐ Рейтинг: <b>{score}</b>\n"
+                            f"🏢 Студия: {anime.primary_studio}\n"
+                            f"🏷 Жанры: {genres_str}\n"
+                            f"━━━━━━━━━━━━━━━━━━━━"
+                        )
+                        markup = {
+                            "inline_keyboard": [
+                                [
+                                    {
+                                        "text": "➕ Отслеживать этот тайтл",
+                                        "callback_data": f"sub:{anime.id}",
+                                    },
+                                    {
+                                        "text": "🌐 Страница на AniList",
+                                        "url": (
+                                            anime.siteUrl
+                                            or f"https://anilist.co/anime/{anime.id}"
+                                        ),
+                                    },
+                                ]
+                            ]
+                        }
+                        try:
+                            await send_telegram_card_to_chat(
+                                user_id, caption, anime.coverImage.best_quality, markup
+                            )
+                            await db.mark_user_digest_sent(user_id)
+                            print(
+                                f"   ✉️ Дайджест успешно отправлен пользователю [{masked_uid}]"
+                            )
+                            await asyncio.sleep(0.5)
+                        except Exception as e:
+                            print(
+                                f"   ❌ Ошибка отправки дайджеста пользователю [{masked_uid}]: {e}"
+                            )
+        except Exception as e:
+            print(f"⚠️ Ошибка обработки дайджестов: {e}")
+
+        # 7. Data Retention Policy (Самоочистка старых логов > 90 дней)
         try:
             deleted = await db.cleanup_old_records(days=90)
             if deleted > 0:

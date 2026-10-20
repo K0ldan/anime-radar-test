@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS tracked_anime (
 
 ALTER TABLE tracked_anime ADD COLUMN IF NOT EXISTS status VARCHAR(50);
 ALTER TABLE tracked_anime ADD COLUMN IF NOT EXISTS total_episodes INTEGER;
+ALTER TABLE tracked_anime ADD COLUMN IF NOT EXISTS genres TEXT[];
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_digest_at TIMESTAMP WITH TIME ZONE;
 
 -- 3. Персональные подписки пользователей
 CREATE TABLE IF NOT EXISTS user_subscriptions (
@@ -123,18 +125,20 @@ class Database:
         cover_image_url: str,
         status: str | None = None,
         total_episodes: int | None = None,
+        genres: list[str] | None = None,
     ):
         """Добавляет аниме в каталог и оформляет подписку."""
         pool = await self.get_pool()
         async with pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 """
-                INSERT INTO tracked_anime (anime_id, title, site_url, cover_image_url, status, total_episodes)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO tracked_anime (anime_id, title, site_url, cover_image_url, status, total_episodes, genres)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (anime_id) DO UPDATE 
                 SET title = EXCLUDED.title, site_url = EXCLUDED.site_url, cover_image_url = EXCLUDED.cover_image_url,
                     status = COALESCE(EXCLUDED.status, tracked_anime.status),
-                    total_episodes = COALESCE(EXCLUDED.total_episodes, tracked_anime.total_episodes);
+                    total_episodes = COALESCE(EXCLUDED.total_episodes, tracked_anime.total_episodes),
+                    genres = COALESCE(EXCLUDED.genres, tracked_anime.genres);
             """,
                 anime_id,
                 title,
@@ -142,6 +146,7 @@ class Database:
                 cover_image_url,
                 status,
                 total_episodes,
+                genres,
             )
 
             await conn.execute(
@@ -253,6 +258,62 @@ class Database:
             )
             count = int(res.split(" ")[1]) if "DELETE" in res else 0
             return count
+
+    async def get_user_favorite_genres(self, telegram_chat_id: int) -> list[str]:
+        """Возвращает список любимых жанров пользователя на основе его коллекции."""
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT unnest(t.genres) as genre, COUNT(*) as freq
+                FROM user_subscriptions s
+                JOIN tracked_anime t ON s.anime_id = t.anime_id
+                WHERE s.telegram_chat_id = $1 AND t.genres IS NOT NULL
+                GROUP BY genre
+                ORDER BY freq DESC, genre
+                LIMIT 5;
+            """,
+                telegram_chat_id,
+            )
+            return [r["genre"] for r in rows]
+
+    async def get_users_eligible_for_digest(self, days_interval: int = 7) -> list[int]:
+        """
+        Находит пользователей для отправки еженедельного дайджеста:
+        1. Имеют хотя бы 1 сохранённый тайтл.
+        2. Все тайтлы в списке уже FINISHED (нет онгоингов).
+        3. Дайджест не отправлялся последние N дней (или ни разу).
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT u.telegram_chat_id
+                FROM users u
+                WHERE EXISTS (
+                    SELECT 1 FROM user_subscriptions s WHERE s.telegram_chat_id = u.telegram_chat_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM user_subscriptions s
+                    JOIN tracked_anime t ON s.anime_id = t.anime_id
+                    WHERE s.telegram_chat_id = u.telegram_chat_id AND (t.status = 'RELEASING' OR t.status IS NULL)
+                )
+                AND (u.last_digest_at IS NULL OR u.last_digest_at < NOW() - ($1 || ' days')::INTERVAL);
+            """,
+                str(days_interval),
+            )
+            return [r["telegram_chat_id"] for r in rows]
+
+    async def mark_user_digest_sent(self, telegram_chat_id: int):
+        """Обновляет таймстемп отправки последнего дайджеста пользователю."""
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE users SET last_digest_at = NOW() WHERE telegram_chat_id = $1;
+            """,
+                telegram_chat_id,
+            )
 
 
 if __name__ == "__main__":

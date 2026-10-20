@@ -37,7 +37,7 @@ class Media(BaseModel):
     popularity: int | None = None
     genres: list[str] = Field(default_factory=list)
     studios: StudioConnection = Field(default_factory=StudioConnection)
-    coverImage: CoverImage
+    coverImage: CoverImage = Field(default_factory=CoverImage)
     siteUrl: str | None = None
     status: str | None = None
     episodes: int | None = None

@@ -32,6 +32,35 @@ query SearchAnime($search: String, $perPage: Int) {
 }
 """
 
+GRAPHQL_RECOMMENDATIONS_QUERY = """
+query GetRecommendations($genres: [String], $perPage: Int) {
+  Page(page: 1, perPage: $perPage) {
+    media(genre_in: $genres, status: RELEASING, sort: [SCORE_DESC, POPULARITY_DESC], type: ANIME) {
+      id
+      title {
+        romaji
+        english
+      }
+      averageScore
+      popularity
+      coverImage {
+        extraLarge
+        large
+      }
+      genres
+      studios(isMain: true) {
+        nodes {
+          name
+        }
+      }
+      siteUrl
+      status
+      episodes
+    }
+  }
+}
+"""
+
 GRAPHQL_TRACKED_QUERY = """
 query GetTrackedSchedules($mediaIds: [Int]) {
   Page(page: 1, perPage: 50) {
@@ -208,5 +237,46 @@ class AniListClient:
                 results.append(Media.model_validate(raw_item))
             except Exception as e:
                 print(f"⚠️ Ошибка валидации Media: {e}")
+                continue
+        return results
+
+    async def get_recommendations(
+        self,
+        genres: list[str] | None = None,
+        limit: int = 2,
+        exclude_ids: list[int] | None = None,
+    ) -> list[Media]:
+        """
+        Рекомендательный движок: находит лучшие онгоинги по списку любимых жанров.
+        Исключает тайтлы, которые пользователь уже отслеживает.
+        """
+        exclude_set = set(exclude_ids or [])
+        variables: dict = {"perPage": limit + len(exclude_set) + 5}
+        if genres:
+            variables["genres"] = genres[:3]
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                ANILIST_API_URL,
+                json={"query": GRAPHQL_RECOMMENDATIONS_QUERY, "variables": variables},
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        raw_media_list = data.get("data", {}).get("Page", {}).get("media", [])
+        results: list[Media] = []
+        for raw_item in raw_media_list:
+            if raw_item.get("id") in exclude_set:
+                continue
+            try:
+                results.append(Media.model_validate(raw_item))
+                if len(results) >= limit:
+                    break
+            except Exception as e:
+                print(f"⚠️ Ошибка валидации Media рекомендации: {e}")
                 continue
         return results
