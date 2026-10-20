@@ -1,0 +1,45 @@
+name: Anime Radar Pipeline
+
+on:
+  schedule:
+    # Запуск каждый час (минута 0 каждого часа) 24/7
+    - cron: '0 * * * *'
+  # Возможность запустить вручную одной кнопкой в интерфейсе GitHub
+  workflow_dispatch:
+
+# Минимальные права доступа для GitHub Actions токена (только чтение кода)
+permissions:
+  contents: read
+
+# Защита от параллельного запуска нескольких пайплайнов (гарантия отсутствия дублей уведомлений)
+concurrency:
+  group: anime-radar-pipeline
+  cancel-in-progress: false
+
+jobs:
+  check-releases:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 📥 Клонирование репозитория
+        uses: actions/checkout@v4
+
+      - name: 🐍 Установка Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 📦 Установка зависимостей
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 🚀 Запуск пайплайна проверок релизов
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: |
+          python main.py
