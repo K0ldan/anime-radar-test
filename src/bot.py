@@ -4,10 +4,10 @@ import os
 import re
 import sys
 import time
-
 from pathlib import Path
-from aiohttp import web
+
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 from dotenv import load_dotenv
 
 if sys.platform == "win32":
@@ -451,7 +451,7 @@ async def callback_subscribe(callback: types.CallbackQuery):
 
     raw_caption = callback.message.caption or callback.message.text or ""
     caption_lines = raw_caption.split("\n") if raw_caption else ["Аниме"]
-    
+
     title = "Аниме"
     for line in caption_lines:
         if "🎬" in line:
@@ -563,7 +563,8 @@ async def on_shutdown():
 
 
 async def start_health_server(port: int):
-    """Фоновый HTTP-сервер для Hugging Face / Render health-checks."""
+    """Фоновый HTTP-сервер для health-checks при запуске с открытым портом."""
+
     async def handle_ping(request):
         return web.Response(
             text="OK - Anime Radar Bot is running 24/7!\n",

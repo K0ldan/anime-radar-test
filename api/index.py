@@ -1,5 +1,4 @@
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -8,6 +7,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
 from aiogram.types import Update
+
 from src.bot import bot, db, dp, setup_bot_commands
 from src.observability import init_sentry
 
@@ -73,7 +73,7 @@ async def app(scope, receive, send):
                 )
                 await send({"type": "http.response.body", "body": body})
             except Exception as e:
-                err_body = f"Ошибка установки Webhook: {e}".encode("utf-8")
+                err_body = f"Ошибка установки Webhook: {e}".encode()
                 await send(
                     {
                         "type": "http.response.start",
@@ -91,7 +91,7 @@ async def app(scope, receive, send):
         body = (
             "OK - Anime Radar Bot is active on Vercel 24/7!\n\n"
             "Для привязки Webhook перейдите по адресу: /set_webhook\n"
-        ).encode("utf-8")
+        ).encode()
         await send(
             {
                 "type": "http.response.start",

@@ -1,6 +1,7 @@
 import time
 
 import httpx
+
 from src.models.anime import AiringSchedule, Media
 
 ANILIST_API_URL = "https://graphql.anilist.co"

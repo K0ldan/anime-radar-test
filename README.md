@@ -72,7 +72,8 @@ flowchart TD
 * **Валидация:** `pydantic v2`
 * **База данных:** `asyncpg` + Neon PostgreSQL (Serverless Scale-to-Zero)
 * **Observability:** `sentry-sdk`
-* **CI/CD & Оркестрация:** GitHub Actions (Cron 24/7)
+* **CI/CD & Оркестрация:** GitHub Actions (Cron каждый час)
+* **Cloud Webhook Hosting:** Vercel Serverless (24/7 Webhook Engine)
 
 ---
 
