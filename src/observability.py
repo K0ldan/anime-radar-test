@@ -19,7 +19,7 @@ if sys.platform == "win32":
 # Регулярные выражения для маскирования чувствительных паттернов
 RE_TELEGRAM_BOT_TOKEN = re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{20,50}\b")
 RE_POSTGRES_URL = re.compile(r"postgres(?:ql)?://[^\s\"']+", re.IGNORECASE)
-RE_SENTRY_DSN = re.compile(r"https://[a-f0-9]+@[a-f0-9.]+/[0-9]+", re.IGNORECASE)
+RE_SENTRY_DSN = re.compile(r"https://[a-f0-9]+@[a-z0-9.-]+/[0-9]+", re.IGNORECASE)
 
 SENSITIVE_KEY_SUBSTRINGS = (
     "chat_id",

@@ -2,7 +2,7 @@ import html
 import urllib.parse
 from typing import Any
 
-from src.models.anime import AiringSchedule
+from src.models.anime import AiringSchedule, Media
 
 
 def format_telegram_card(schedule: AiringSchedule) -> tuple[str, str, dict[str, Any]]:
@@ -63,3 +63,53 @@ def format_telegram_card(schedule: AiringSchedule) -> tuple[str, str, dict[str, 
     }
 
     return caption, photo_url, reply_markup
+
+
+def format_anime_catalog_card(
+    anime: Media,
+    status_label_override: str | None = None,
+    header_prefix: str | None = None,
+    footer_text: str | None = None,
+) -> str:
+    """
+    Форматирует объект Media в стандартную карточку каталога аниме.
+    Гарантирует 100% обратную совместимость с реверс-парсером callback_subscribe:
+    - Сохраняет маркеры '🎬', '📌 Статус:', '⭐ Рейтинг:', '🏢 Студия:', '🏷 Жанры:'
+    - Выполняет корректное экранирование HTML спецсимволов (&, <, >, ", ')
+    - Предотвращает двойное экранирование
+    """
+    safe_title = html.escape(anime.display_title)
+    score = (
+        f"{anime.averageScore / 10:.1f} / 10"
+        if anime.averageScore
+        else "Без оценки"
+    )
+    genres = (
+        html.escape(", ".join(anime.genres[:3])) if anime.genres else "Не указано"
+    )
+    studio = html.escape(anime.primary_studio)
+
+    if status_label_override:
+        status_label = html.escape(status_label_override)
+        episodes_info = ""
+    else:
+        status_label = html.escape(anime.status_label)
+        episodes_info = f" (всего серий: {anime.episodes})" if anime.episodes else ""
+
+    card_body = (
+        f"🎬 <b>{safe_title}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 Статус: <b>{status_label}</b>{episodes_info}\n"
+        f"⭐ Рейтинг: <b>{score}</b>\n"
+        f"🏢 Студия: {studio}\n"
+        f"🏷 Жанры: {genres}\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
+
+    result = card_body
+    if header_prefix:
+        result = f"{header_prefix}\n{result}"
+    if footer_text:
+        result = f"{result}\n{footer_text}"
+
+    return result

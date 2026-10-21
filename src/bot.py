@@ -39,7 +39,10 @@ from aiogram.types import (
 
 from src.clients.anilist import AniListClient
 from src.database import Database
-from src.formatters.telegram import format_telegram_card
+from src.formatters.telegram import (
+    format_anime_catalog_card,
+    format_telegram_card,
+)
 from src.observability import capture_error, init_sentry
 
 bot = Bot(token=BOT_TOKEN)
@@ -433,35 +436,13 @@ async def perform_search(message: types.Message, query: str):
     await wait_msg.delete()
 
     for anime in results:
-        safe_title = html.escape(anime.display_title)
-        score = (
-            f"{anime.averageScore / 10:.1f} / 10"
-            if anime.averageScore
-            else "Без оценки"
-        )
-        genres = (
-            html.escape(", ".join(anime.genres[:3])) if anime.genres else "Не указано"
-        )
-        studio = html.escape(anime.primary_studio)
         photo_url = anime.coverImage.best_quality
-
-        status_label = html.escape(anime.status_label)
-        episodes_info = f" (всего серий: {anime.episodes})" if anime.episodes else ""
         button_text = (
             "📌 В коллекцию (Завершено)"
             if anime.is_finished
             else "➕ Отслеживать новые серии"
         )
-
-        caption = (
-            f"🎬 <b>{safe_title}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"📌 Статус: <b>{status_label}</b>{episodes_info}\n"
-            f"⭐ Рейтинг: <b>{score}</b>\n"
-            f"🏢 Студия: {studio}\n"
-            f"🏷 Жанры: {genres}\n"
-            f"━━━━━━━━━━━━━━━━━━━━"
-        )
+        caption = format_anime_catalog_card(anime)
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -535,26 +516,9 @@ async def btn_recommendations(message: types.Message):
     )
 
     for anime in recs:
-        safe_title = html.escape(anime.display_title)
-        score = (
-            f"{anime.averageScore / 10:.1f} / 10"
-            if anime.averageScore
-            else "Без оценки"
-        )
-        genres = (
-            html.escape(", ".join(anime.genres[:3])) if anime.genres else "Не указано"
-        )
-        studio = html.escape(anime.primary_studio)
         photo_url = anime.coverImage.best_quality
-
-        caption = (
-            f"🎬 <b>{safe_title}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"📌 Статус: <b>🟢 Выходит (Онгоинг)</b>\n"
-            f"⭐ Рейтинг: <b>{score}</b>\n"
-            f"🏢 Студия: {studio}\n"
-            f"🏷 Жанры: {genres}\n"
-            f"━━━━━━━━━━━━━━━━━━━━"
+        caption = format_anime_catalog_card(
+            anime, status_label_override="🟢 Выходит (Онгоинг)"
         )
 
         keyboard = InlineKeyboardMarkup(

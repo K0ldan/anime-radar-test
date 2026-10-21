@@ -20,3 +20,6 @@ __pycache__/
 *.log
 *.db
 *.sqlite
+
+# Local tests (kept offline)
+tests/

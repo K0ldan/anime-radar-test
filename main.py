@@ -19,7 +19,7 @@ DEFAULT_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 from src.clients.anilist import AniListClient
 from src.database import Database
-from src.formatters.telegram import format_telegram_card
+from src.formatters.telegram import format_anime_catalog_card, format_telegram_card
 from src.observability import init_sentry
 
 
@@ -177,27 +177,15 @@ async def main():
                         anime = chosen_schedule.media
                         ep_header = f"⚡ <b>Только что вышла {chosen_schedule.episode} серия!</b>"
 
-                    score = (
-                        f"{anime.averageScore / 10:.1f} / 10"
-                        if anime.averageScore
-                        else "Без оценки"
+                    header_prefix = (
+                        f"📡 <b>Радар поймал новинку в эфире!</b>\n\n{ep_header}"
                     )
-                    genres_str = (
-                        ", ".join(anime.genres[:3]) if anime.genres else "Не указано"
-                    )
-                    studio_str = anime.primary_studio
-
-                    caption = (
-                        f"📡 <b>Радар поймал новинку в эфире!</b>\n\n"
-                        f"{ep_header}\n"
-                        f"🎬 <b>{anime.display_title}</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"📌 Статус: <b>🟢 Выходит (Онгоинг)</b>\n"
-                        f"⭐ Рейтинг: <b>{score}</b>\n"
-                        f"🏢 Студия: {studio_str}\n"
-                        f"🏷 Жанры: {genres_str}\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"<i>Все аниме в вашей коллекции завершены — начните новый онгоинг в один клик:</i>"
+                    footer_text = "<i>Все аниме в вашей коллекции завершены — начните новый онгоинг в один клик:</i>"
+                    caption = format_anime_catalog_card(
+                        anime,
+                        status_label_override="🟢 Выходит (Онгоинг)",
+                        header_prefix=header_prefix,
+                        footer_text=footer_text,
                     )
 
                     markup = {
