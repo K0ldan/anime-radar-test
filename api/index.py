@@ -1,4 +1,7 @@
+import hashlib
+import hmac
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -12,6 +15,13 @@ from src.bot import bot, db, dp, setup_bot_commands
 from src.observability import init_sentry
 
 _initialized = False
+
+# Вычисление детерминированного криптографического токена для верификации запросов от Telegram
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+WEBHOOK_SECRET = (
+    os.getenv("TELEGRAM_WEBHOOK_SECRET")
+    or hashlib.sha256(f"ar_secret_{BOT_TOKEN}".encode()).hexdigest()[:32]
+)
 
 
 async def ensure_initialized():
@@ -28,7 +38,7 @@ async def ensure_initialized():
 
 
 async def app(scope, receive, send):
-    """Нативный ASGI обработчик для Vercel Serverless Functions."""
+    """Нативный ASGI обработчик для Vercel Serverless Functions с проверкой подписи Telegram."""
     if scope["type"] != "http":
         return
 
@@ -45,21 +55,27 @@ async def app(scope, receive, send):
                 proto = headers.get(b"x-forwarded-proto", b"https").decode("utf-8")
                 webhook_url = f"{proto}://{host}/"
 
-                await bot.set_webhook(url=webhook_url, drop_pending_updates=True)
+                await bot.set_webhook(
+                    url=webhook_url,
+                    secret_token=WEBHOOK_SECRET,
+                    drop_pending_updates=True,
+                    allowed_updates=["message", "callback_query"],
+                )
                 info = await bot.get_webhook_info()
 
                 body = json.dumps(
                     {
                         "status": "success",
-                        "message": f"Webhook успешно установлен на {webhook_url}",
+                        "message": f"Webhook успешно защищен и установлен на {webhook_url}",
                         "webhook_info": {
                             "url": info.url,
                             "pending_update_count": info.pending_update_count,
+                            "has_custom_certificate": info.has_custom_certificate,
                         },
                     },
                     ensure_ascii=False,
                     indent=2,
-                ).encode("utf-8")
+                ).encode()
 
                 await send(
                     {
@@ -67,7 +83,7 @@ async def app(scope, receive, send):
                         "status": 200,
                         "headers": [
                             (b"content-type", b"application/json; charset=utf-8"),
-                            (b"content-length", str(len(body)).encode("utf-8")),
+                            (b"content-length", str(len(body)).encode()),
                         ],
                     }
                 )
@@ -80,7 +96,7 @@ async def app(scope, receive, send):
                         "status": 500,
                         "headers": [
                             (b"content-type", b"text/plain; charset=utf-8"),
-                            (b"content-length", str(len(err_body)).encode("utf-8")),
+                            (b"content-length", str(len(err_body)).encode()),
                         ],
                     }
                 )
@@ -89,16 +105,16 @@ async def app(scope, receive, send):
 
         # Главная страница (проверка статуса)
         body = (
-            "OK - Anime Radar Bot is active on Vercel 24/7!\n\n"
-            "Для привязки Webhook перейдите по адресу: /set_webhook\n"
-        ).encode()
+            b"OK - Anime Radar Bot is active on Vercel 24/7!\n\n"
+            b"Endpoint is cryptographically protected with Telegram Secret Token.\n"
+        )
         await send(
             {
                 "type": "http.response.start",
                 "status": 200,
                 "headers": [
                     (b"content-type", b"text/plain; charset=utf-8"),
-                    (b"content-length", str(len(body)).encode("utf-8")),
+                    (b"content-length", str(len(body)).encode()),
                 ],
             }
         )
@@ -107,6 +123,31 @@ async def app(scope, receive, send):
 
     # === POST запросы: входящие сообщения и кнопки от Telegram ===
     if method == "POST":
+        headers = dict(scope.get("headers", []))
+        received_token = headers.get(b"x-telegram-bot-api-secret-token", b"").decode(
+            "utf-8", errors="ignore"
+        )
+
+        # Строгая верификация: отсекаем любых спамеров или сканеров
+        if not hmac.compare_digest(received_token, WEBHOOK_SECRET):
+            print(
+                "🛑 Отклонён неавторизованный POST-запрос: неверный Secret Token!",
+                file=sys.stderr,
+            )
+            forbidden_body = b"Forbidden: Invalid or missing Telegram secret token"
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 403,
+                    "headers": [
+                        (b"content-type", b"text/plain; charset=utf-8"),
+                        (b"content-length", str(len(forbidden_body)).encode()),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": forbidden_body})
+            return
+
         body_parts = []
         more_body = True
         while more_body:
@@ -131,7 +172,7 @@ async def app(scope, receive, send):
                 "status": 200,
                 "headers": [
                     (b"content-type", b"text/plain"),
-                    (b"content-length", str(len(resp_body)).encode("utf-8")),
+                    (b"content-length", str(len(resp_body)).encode()),
                 ],
             }
         )
