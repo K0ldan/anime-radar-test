@@ -118,7 +118,7 @@ async def cmd_help(message: types.Message):
 
 def make_progress_bar(percentage: float, length: int = 8) -> str:
     """Генерирует аккуратный визуальный индикатор прогресса из символов блока."""
-    filled = int(round(percentage * length / 100))
+    filled = round(percentage * length / 100)
     filled = max(0, min(length, filled))
     return "▓" * filled + "░" * (length - filled)
 
@@ -725,7 +725,7 @@ async def on_startup():
 async def on_shutdown():
     """Хук корректного завершения соединений."""
     print("🛑 Остановка сервиса...")
-    webhook_host = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("WEBHOOK_URL")
+    webhook_host = os.getenv("WEBHOOK_URL")
     if webhook_host:
         try:
             await bot.delete_webhook()
@@ -735,32 +735,12 @@ async def on_shutdown():
     await db.close()
 
 
-async def start_health_server(port: int):
-    """Фоновый HTTP-сервер для health-checks при запуске с открытым портом."""
-
-    async def handle_ping(request):
-        return web.Response(
-            text="OK - Anime Radar Bot is running 24/7!\n",
-            content_type="text/plain",
-        )
-
-    app = web.Application()
-    app.router.add_get("/", handle_ping)
-    app.router.add_get("/health", handle_ping)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"🌐 Health-check сервер слушает порт {port}")
-
-
 def main():
-    webhook_host = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("WEBHOOK_URL")
+    webhook_host = os.getenv("WEBHOOK_URL")
     port = int(os.getenv("PORT", "8080"))
 
     if webhook_host:
-        # === 1. Режим Webhook для облачного продакшена ===
+        # === 1. Режим Webhook для внешнего сервера ===
         app = web.Application()
 
         async def handle_ping(request):
@@ -784,15 +764,8 @@ def main():
         )
         web.run_app(app, host="0.0.0.0", port=port)
     else:
-        # === 2. Режим Long-Polling (Hugging Face Spaces 24/7 / Локально) ===
+        # === 2. Режим Long-Polling (Локальная разработка и тестирование) ===
         async def run_local_polling():
-            port_env = os.getenv("PORT")
-            if port_env:
-                try:
-                    await start_health_server(int(port_env))
-                except Exception as e:
-                    print(f"⚠️ Ошибка запуска health-check сервера: {e}")
-
             await on_startup()
             print("✅ Бот слушает сообщения в режиме Polling...")
             try:
