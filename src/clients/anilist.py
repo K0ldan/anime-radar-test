@@ -1,10 +1,20 @@
 import time
+from typing import Any
 
 import httpx
 
 from src.models.anime import AiringSchedule, Media
 
 ANILIST_API_URL = "https://graphql.anilist.co"
+
+
+class AniListAPIError(Exception):
+    """Базовое исключение для ошибок AniList API."""
+
+
+class AniListUnavailableError(AniListAPIError):
+    """Вызывается, когда сервис AniList недоступен (техработы, 403, 502, 503, таймаут)."""
+
 
 GRAPHQL_SEARCH_QUERY = """
 query SearchAnime($search: String, $perPage: Int) {
@@ -171,6 +181,64 @@ class AniListClient:
     def __init__(self, timeout: float = 12.0):
         self.timeout = timeout
 
+    async def _post(
+        self, query: str, variables: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """
+        Выполняет GraphQL запрос к AniList с обработкой технических регламентов,
+        таймаутов и защитой от падений при сбоях на стороне AniList.
+        """
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "AnimeRadar/1.0 (+https://github.com/K0ldan/anime-radar-test)",
+        }
+        payload: dict[str, Any] = {"query": query}
+        if variables:
+            payload["variables"] = variables
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    ANILIST_API_URL, json=payload, headers=headers
+                )
+        except (httpx.TimeoutException, httpx.NetworkError) as e:
+            raise AniListUnavailableError(
+                f"Сетевая ошибка или таймаут при обращении к AniList: {e}"
+            ) from e
+
+        if response.is_error:
+            err_msg = ""
+            try:
+                err_data = response.json()
+                if isinstance(err_data, dict) and err_data.get("errors"):
+                    err_msg = str(err_data["errors"][0].get("message", ""))
+            except Exception:  # noqa: BLE001
+                err_msg = ""
+
+            status = response.status_code
+            if (
+                status in (403, 429, 500, 502, 503, 504)
+                or "temporarily disabled" in err_msg.lower()
+            ):
+                detailed_msg = err_msg or f"HTTP {status}"
+                raise AniListUnavailableError(
+                    f"Сервис AniList временно недоступен ({detailed_msg})"
+                )
+
+            response.raise_for_status()
+
+        data: dict[str, Any] = response.json()
+        if data.get("errors"):
+            first_err = data["errors"][0].get("message", "Неизвестная ошибка GraphQL")
+            if "temporarily disabled" in first_err.lower():
+                raise AniListUnavailableError(
+                    f"Сервис AniList временно недоступен ({first_err})"
+                )
+            raise AniListAPIError(f"AniList GraphQL Error: {first_err}")
+
+        return data
+
     async def get_upcoming_schedules(
         self, limit: int = 5, distinct_anime: bool = True
     ) -> list[AiringSchedule]:
@@ -181,17 +249,7 @@ class AniListClient:
         # Запрашиваем с запасом (30), чтобы легко отфильтровать уникальные тайтлы
         fetch_count = 30 if distinct_anime else limit
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                ANILIST_API_URL,
-                json={"query": GRAPHQL_QUERY, "variables": {"perPage": fetch_count}},
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await self._post(GRAPHQL_QUERY, variables={"perPage": fetch_count})
 
         raw_schedules = data.get("data", {}).get("Page", {}).get("airingSchedules", [])
 
@@ -225,20 +283,9 @@ class AniListClient:
         if not media_ids:
             return []
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                ANILIST_API_URL,
-                json={
-                    "query": GRAPHQL_TRACKED_QUERY,
-                    "variables": {"mediaIds": media_ids},
-                },
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await self._post(
+            GRAPHQL_TRACKED_QUERY, variables={"mediaIds": media_ids}
+        )
 
         raw_schedules = data.get("data", {}).get("Page", {}).get("airingSchedules", [])
         results: list[AiringSchedule] = []
@@ -260,24 +307,14 @@ class AniListClient:
         now = int(time.time())
         past = now - hours_back * 3600
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                ANILIST_API_URL,
-                json={
-                    "query": GRAPHQL_RECENT_AIRING_QUERY,
-                    "variables": {
-                        "airingAt_greater": past,
-                        "airingAt_lesser": now,
-                        "perPage": limit,
-                    },
-                },
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await self._post(
+            GRAPHQL_RECENT_AIRING_QUERY,
+            variables={
+                "airingAt_greater": past,
+                "airingAt_lesser": now,
+                "perPage": limit,
+            },
+        )
 
         raw_schedules = data.get("data", {}).get("Page", {}).get("airingSchedules", [])
         results: list[AiringSchedule] = []
@@ -291,20 +328,10 @@ class AniListClient:
 
     async def search_anime(self, query_str: str, limit: int = 3) -> list[Media]:
         """Поиск аниме на AniList по названию (100% бесплатно)."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                ANILIST_API_URL,
-                json={
-                    "query": GRAPHQL_SEARCH_QUERY,
-                    "variables": {"search": query_str, "perPage": limit},
-                },
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await self._post(
+            GRAPHQL_SEARCH_QUERY,
+            variables={"search": query_str, "perPage": limit},
+        )
 
         raw_media_list = data.get("data", {}).get("Page", {}).get("media", [])
         results: list[Media] = []
@@ -328,21 +355,11 @@ class AniListClient:
         """
         exclude_set = set(exclude_ids or [])
         target_genre = genres[0] if genres and len(genres) > 0 else None
-        variables: dict = {"perPage": limit + len(exclude_set) + 5}
+        variables: dict[str, Any] = {"perPage": limit + len(exclude_set) + 5}
         if target_genre:
             variables["genre"] = target_genre
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                ANILIST_API_URL,
-                json={"query": GRAPHQL_RECOMMENDATIONS_QUERY, "variables": variables},
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await self._post(GRAPHQL_RECOMMENDATIONS_QUERY, variables=variables)
 
         raw_media_list = data.get("data", {}).get("Page", {}).get("media", [])
         results: list[Media] = []

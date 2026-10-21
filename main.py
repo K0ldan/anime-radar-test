@@ -17,7 +17,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DEFAULT_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-from src.clients.anilist import AniListClient
+from src.clients.anilist import AniListClient, AniListUnavailableError
 from src.database import Database
 from src.formatters.telegram import format_anime_catalog_card, format_telegram_card
 from src.observability import init_sentry
@@ -58,18 +58,22 @@ async def main():
         # 1. Получаем список ID аниме, которые отслеживают наши пользователи
         tracked_ids = await db.get_all_tracked_anime_ids()
 
-        if tracked_ids:
-            print(
-                f"🎯 Пользователи отслеживают тайтлов: {len(tracked_ids)} (IDs: {tracked_ids})"
-            )
-            schedules = await client.get_schedules_for_media_ids(tracked_ids)
-        else:
-            print(
-                "💡 Список персональных подписок пока пуст. Запрашиваем общий ТОП расписания..."
-            )
-            schedules = await client.get_upcoming_schedules(
-                limit=5, distinct_anime=True
-            )
+        try:
+            if tracked_ids:
+                print(
+                    f"🎯 Пользователи отслеживают тайтлов: {len(tracked_ids)} (IDs: {tracked_ids})"
+                )
+                schedules = await client.get_schedules_for_media_ids(tracked_ids)
+            else:
+                print(
+                    "💡 Список персональных подписок пока пуст. Запрашиваем общий ТОП расписания..."
+                )
+                schedules = await client.get_upcoming_schedules(
+                    limit=5, distinct_anime=True
+                )
+        except AniListUnavailableError as e:
+            print(f"⚠️ Пропуск проверки релизов из-за регламента/сбоя AniList: {e}")
+            schedules = []
 
         print(f"📡 Получено серий для анализа: {len(schedules)}\n")
         new_notifications_count = 0

@@ -37,7 +37,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from src.clients.anilist import AniListClient
+from src.clients.anilist import AniListClient, AniListUnavailableError
 from src.database import Database
 from src.formatters.telegram import (
     format_anime_catalog_card,
@@ -401,6 +401,14 @@ async def btn_check_releases(message: types.Message):
                     parse_mode="HTML",
                     reply_markup=reply_markup,
                 )
+    except AniListUnavailableError:
+        await wait_msg.edit_text(
+            "⚠️ <b>Сервис AniList временно недоступен</b>\n\n"
+            "На стороне серверов каталога AniList сейчас ведутся технические работы. "
+            "Пожалуйста, повторите попытку немного позже.",
+            parse_mode="HTML",
+        )
+        return
     except Exception as e:
         capture_error(e, context="btn_check_releases")
         await wait_msg.edit_text(f"❌ Ошибка проверки расписания: {e}")
@@ -422,7 +430,16 @@ async def perform_search(message: types.Message, query: str):
 
     try:
         results = await anilist.search_anime(query, limit=3)
+    except AniListUnavailableError:
+        await wait_msg.edit_text(
+            "⚠️ <b>Поиск временно недоступен</b>\n\n"
+            "Сервера каталога AniList сейчас находятся на техническом обслуживании. "
+            "Пожалуйста, попробуйте повторить поиск чуть позже.",
+            parse_mode="HTML",
+        )
+        return
     except Exception as e:
+        capture_error(e, context="perform_search")
         await wait_msg.edit_text(f"❌ Ошибка поиска: {e}")
         return
 
@@ -492,7 +509,16 @@ async def btn_recommendations(message: types.Message):
             limit=2,
             exclude_ids=exclude_ids,
         )
+    except AniListUnavailableError:
+        await wait_msg.edit_text(
+            "⚠️ <b>Подбор рекомендаций временно недоступен</b>\n\n"
+            "Сервера каталога AniList сейчас находятся на техническом обслуживании. "
+            "Пожалуйста, попробуйте чуть позже.",
+            parse_mode="HTML",
+        )
+        return
     except Exception as e:
+        capture_error(e, context="btn_recommendations")
         await wait_msg.edit_text(f"❌ Ошибка подбора рекомендаций: {e}")
         return
 
