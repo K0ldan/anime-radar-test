@@ -4,6 +4,8 @@ import os
 import re
 import sys
 import time
+from collections import Counter
+from datetime import UTC, datetime
 from pathlib import Path
 
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
@@ -78,7 +80,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
             KeyboardButton(text="⚡ Проверить релизы"),
             KeyboardButton(text="🎲 Что посмотреть?"),
         ],
-        [KeyboardButton(text="ℹ️ Помощь")],
+        [KeyboardButton(text="📊 Мой профиль"), KeyboardButton(text="ℹ️ Помощь")],
     ],
     resize_keyboard=True,
     persistent=True,
@@ -108,9 +110,173 @@ async def cmd_help(message: types.Message):
         "🔍 <b>Поиск аниме:</b> напишите <code>/track Название</code> или просто отправьте название тайтла в чат (например: <i>Solo Leveling</i>).\n"
         "📋 <b>Мои подписки:</b> покажет все ваши сохраненные аниме со статусами (Онгоинг / Завершено) и кнопками удаления.\n"
         "⚡ <b>Проверить релизы:</b> запустить проверку актуального расписания прямо сейчас.\n"
-        "🎲 <b>Что посмотреть?:</b> персональные рекомендации горячих онгоингов на основе жанров вашей коллекции."
+        "🎲 <b>Что посмотреть?:</b> персональные рекомендации горячих онгоингов на основе жанров вашей коллекции.\n"
+        "📊 <b>Мой профиль:</b> персональная аналитика коллекции, любимые жанры и ранг зрителя."
     )
     await message.answer(text, parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
+
+
+def make_progress_bar(percentage: float, length: int = 8) -> str:
+    """Генерирует аккуратный визуальный индикатор прогресса из символов блока."""
+    filled = int(round(percentage * length / 100))
+    filled = max(0, min(length, filled))
+    return "▓" * filled + "░" * (length - filled)
+
+
+@dp.message(Command("profile"))
+@dp.message(F.text == "📊 Мой профиль")
+async def cmd_profile(message: types.Message):
+    """Отображает персональный профиль, ранг и инфографику коллекции."""
+    chat_id = message.chat.id
+    if not check_rate_limit(chat_id, cooldown=1.0):
+        await message.answer("⏳ Слишком частые запросы, подождите немного.")
+        return
+
+    try:
+        data = await db.get_user_profile(chat_id)
+        subs = data["subscriptions"]
+        username = (
+            data["username"]
+            or message.from_user.username
+            or message.from_user.first_name
+            or "Зритель"
+        )
+        created_at = data["created_at"]
+
+        days_in_club = 1
+        if created_at:
+            now = datetime.now(UTC)
+            diff = (now - created_at).days
+            days_in_club = max(1, diff + 1)
+
+        total_titles = len(subs)
+
+        if total_titles == 0:
+            rank = "🌱 Начинающий зритель"
+        elif total_titles <= 3:
+            rank = "🥉 Аниме-любитель"
+        elif total_titles <= 9:
+            rank = "🥈 Знаток онгоингов"
+        elif total_titles <= 24:
+            rank = "🥇 Опытный отаку"
+        else:
+            rank = "👑 Легендарный сэнсэй"
+
+        if total_titles == 0:
+            text = (
+                f"📊 <b>Профиль зрителя | @{html.escape(username)}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🏆 <b>Ранг:</b> {rank}\n"
+                f"🗓 <b>В клубе Anime Radar:</b> {days_in_club}-й день\n\n"
+                f"📚 <b>Коллекция тайтлов:</b> пока пуста (0 аниме)\n\n"
+                f"ℹ️ <i>Вы пока не добавили ни одного аниме. Найдите ваши любимые сериалы через <b>«🔍 Найти аниме»</b>, "
+                f"чтобы собрать коллекцию, повысить ранг и открыть персональную инфографику!</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━"
+            )
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="🔍 Найти аниме", callback_data="btn:search"
+                        ),
+                        InlineKeyboardButton(
+                            text="🎲 Что посмотреть?", callback_data="btn:recommend"
+                        ),
+                    ]
+                ]
+            )
+            await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+            return
+
+        releasing_count = sum(1 for s in subs if s.get("status") == "RELEASING")
+        finished_count = sum(1 for s in subs if s.get("status") == "FINISHED")
+        total_episodes = sum(s.get("total_episodes") or 12 for s in subs)
+
+        all_genres = []
+        for s in subs:
+            if s.get("genres"):
+                all_genres.extend(s["genres"])
+
+        genre_counts = Counter(all_genres).most_common(3)
+        if genre_counts:
+            lines = []
+            for rank_idx, (genre, count) in enumerate(genre_counts, start=1):
+                pct = (count / total_titles) * 100
+                bar = make_progress_bar(pct, length=8)
+                lines.append(
+                    f"{rank_idx}. <b>{html.escape(genre)}</b> — {count} тайтл(ов) ({int(pct)}%)\n"
+                    f"   <code>{bar}</code>"
+                )
+            genres_text = "\n".join(lines)
+        else:
+            genres_text = "<i>Жанры пока не определены</i>"
+
+        all_studios = [
+            s["studio"] for s in subs if s.get("studio") and s["studio"] != "Не указана"
+        ]
+        studio_counts = Counter(all_studios).most_common(2)
+        if studio_counts:
+            studios_str = ", ".join(
+                f"<b>{html.escape(st[0])}</b> ({st[1]})" for st in studio_counts
+            )
+        else:
+            studios_str = "<i>Различные независимые студии</i>"
+
+        text = (
+            f"📊 <b>Профиль зрителя | @{html.escape(username)}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🏆 <b>Ранг:</b> {rank}\n"
+            f"🗓 <b>В клубе Anime Radar:</b> {days_in_club} дн.\n\n"
+            f"📚 <b>Коллекция тайтлов ({total_titles}):</b>\n"
+            f"• 🟢 Онгоинги в эфире: <b>{releasing_count}</b>\n"
+            f"• 🏁 Завершённые тайтлы: <b>{finished_count}</b>\n"
+            f"• ⏱ Суммарный объём: <b>~{total_episodes} серий</b>\n\n"
+            f"🎨 <b>Топ любимых жанров:</b>\n"
+            f"{genres_text}\n\n"
+            f"🏢 <b>Любимые анимационные студии:</b>\n"
+            f"{studios_str}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"💡 <i>Инфографика рассчитывается на лету по вашей личной базе.</i>"
+        )
+
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="📋 Мои подписки", callback_data="btn:list"
+                    ),
+                    InlineKeyboardButton(
+                        text="🎲 Что посмотреть?", callback_data="btn:recommend"
+                    ),
+                ]
+            ]
+        )
+        await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    except Exception as e:
+        capture_error(e, context="cmd_profile")
+        await message.answer(f"❌ Ошибка загрузки профиля: {e}")
+
+
+@dp.callback_query(F.data == "btn:search")
+async def callback_btn_search(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.answer(
+        "🔎 <b>Напишите название аниме прямо в этот чат:</b>\n"
+        "<i>Например: Attack on Titan, Naruto, Bleach...</i>",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data == "btn:list")
+async def callback_btn_list(callback: types.CallbackQuery):
+    await callback.answer()
+    await cmd_list(callback.message)
+
+
+@dp.callback_query(F.data == "btn:recommend")
+async def callback_btn_recommend(callback: types.CallbackQuery):
+    await callback.answer()
+    await btn_recommendations(callback.message)
 
 
 @dp.message(F.text == "🔍 Найти аниме")
@@ -467,10 +633,15 @@ async def callback_subscribe(callback: types.CallbackQuery):
     status_val = "FINISHED" if is_finished else "RELEASING"
 
     genres = []
+    studio = None
     for line in caption_lines:
         if "Жанры:" in line:
             genres_raw = re.sub(r"<[^>]+>", "", line).split("Жанры:")[1].strip()
             genres = [g.strip() for g in genres_raw.split(",") if g.strip()]
+        if "Студия:" in line:
+            studio_raw = re.sub(r"<[^>]+>", "", line).split("Студия:")[1].strip()
+            if studio_raw and studio_raw != "Не указана":
+                studio = studio_raw
 
     await db.add_subscription(
         telegram_chat_id=chat_id,
@@ -480,6 +651,7 @@ async def callback_subscribe(callback: types.CallbackQuery):
         cover_image_url="",
         status=status_val,
         genres=genres if genres else None,
+        studio=studio,
     )
 
     if is_finished:
@@ -525,6 +697,7 @@ async def setup_bot_commands():
     await bot.set_my_commands(
         [
             BotCommand(command="start", description="Перезапустить бота и меню"),
+            BotCommand(command="profile", description="📊 Мой профиль и инфографика"),
             BotCommand(command="list", description="Мои отслеживаемые аниме"),
             BotCommand(command="track", description="Найти аниме по названию"),
             BotCommand(

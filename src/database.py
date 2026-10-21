@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS tracked_anime (
 ALTER TABLE tracked_anime ADD COLUMN IF NOT EXISTS status VARCHAR(50);
 ALTER TABLE tracked_anime ADD COLUMN IF NOT EXISTS total_episodes INTEGER;
 ALTER TABLE tracked_anime ADD COLUMN IF NOT EXISTS genres TEXT[];
+ALTER TABLE tracked_anime ADD COLUMN IF NOT EXISTS studio VARCHAR(255);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_digest_at TIMESTAMP WITH TIME ZONE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_live_match_at TIMESTAMP WITH TIME ZONE;
 
@@ -126,19 +127,21 @@ class Database:
         status: str | None = None,
         total_episodes: int | None = None,
         genres: list[str] | None = None,
+        studio: str | None = None,
     ):
         """Добавляет аниме в каталог и оформляет подписку."""
         pool = await self.get_pool()
         async with pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 """
-                INSERT INTO tracked_anime (anime_id, title, site_url, cover_image_url, status, total_episodes, genres)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                INSERT INTO tracked_anime (anime_id, title, site_url, cover_image_url, status, total_episodes, genres, studio)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 ON CONFLICT (anime_id) DO UPDATE 
                 SET title = EXCLUDED.title, site_url = EXCLUDED.site_url, cover_image_url = EXCLUDED.cover_image_url,
                     status = COALESCE(EXCLUDED.status, tracked_anime.status),
                     total_episodes = COALESCE(EXCLUDED.total_episodes, tracked_anime.total_episodes),
-                    genres = COALESCE(EXCLUDED.genres, tracked_anime.genres);
+                    genres = COALESCE(EXCLUDED.genres, tracked_anime.genres),
+                    studio = COALESCE(EXCLUDED.studio, tracked_anime.studio);
             """,
                 anime_id,
                 title,
@@ -147,6 +150,7 @@ class Database:
                 status,
                 total_episodes,
                 genres,
+                studio,
             )
 
             await conn.execute(
@@ -316,3 +320,31 @@ class Database:
             """,
                 telegram_chat_id,
             )
+
+    async def get_user_profile(self, telegram_chat_id: int) -> dict:
+        """
+        Возвращает агрегированные данные аналитики профиля зрителя:
+        - дата регистрации и никнейм
+        - список всех подписок с жанрами, статусами и студиями
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            user_row = await conn.fetchrow(
+                "SELECT created_at, username FROM users WHERE telegram_chat_id = $1;",
+                telegram_chat_id,
+            )
+            subs = await conn.fetch(
+                """
+                SELECT t.anime_id, t.title, t.status, t.total_episodes, t.genres, t.studio
+                FROM user_subscriptions s
+                JOIN tracked_anime t ON s.anime_id = t.anime_id
+                WHERE s.telegram_chat_id = $1;
+            """,
+                telegram_chat_id,
+            )
+
+        return {
+            "username": user_row["username"] if user_row else None,
+            "created_at": user_row["created_at"] if user_row else None,
+            "subscriptions": [dict(r) for r in subs],
+        }
