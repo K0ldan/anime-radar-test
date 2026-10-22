@@ -1,5 +1,6 @@
 import asyncio
 import html
+import math
 import os
 import re
 import sys
@@ -42,6 +43,7 @@ from src.database import Database
 from src.formatters.telegram import (
     format_anime_catalog_card,
     format_telegram_card,
+    format_weekly_schedule,
 )
 from src.observability import capture_error, init_sentry
 
@@ -81,9 +83,13 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         [KeyboardButton(text="📋 Мои подписки"), KeyboardButton(text="🔍 Найти аниме")],
         [
             KeyboardButton(text="⚡ Проверить релизы"),
-            KeyboardButton(text="🎲 Что посмотреть?"),
+            KeyboardButton(text="📅 Расписание недели"),
         ],
-        [KeyboardButton(text="📊 Мой профиль"), KeyboardButton(text="ℹ️ Помощь")],
+        [
+            KeyboardButton(text="🎲 Что посмотреть?"),
+            KeyboardButton(text="📊 Мой профиль"),
+        ],
+        [KeyboardButton(text="ℹ️ Помощь")],
     ],
     resize_keyboard=True,
     persistent=True,
@@ -113,6 +119,7 @@ async def cmd_help(message: types.Message):
         "🔍 <b>Поиск аниме:</b> напишите <code>/track Название</code> или просто отправьте название тайтла в чат (например: <i>Solo Leveling</i>).\n"
         "📋 <b>Мои подписки:</b> покажет все ваши сохраненные аниме со статусами (Онгоинг / Завершено) и кнопками удаления.\n"
         "⚡ <b>Проверить релизы:</b> запустить проверку актуального расписания прямо сейчас.\n"
+        "📅 <b>Расписание недели:</b> расписание серий ваших онгоингов на 7 дней (по дням недели, время МСК).\n"
         "🎲 <b>Что посмотреть?:</b> персональные рекомендации горячих онгоингов на основе жанров вашей коллекции.\n"
         "📊 <b>Мой профиль:</b> персональная аналитика коллекции, любимые жанры и ранг зрителя."
     )
@@ -282,39 +289,33 @@ async def callback_btn_recommend(callback: types.CallbackQuery):
     await btn_recommendations(callback.message)
 
 
-@dp.message(F.text == "🔍 Найти аниме")
-async def btn_search_prompt(message: types.Message):
-    await message.answer(
-        "🔎 <b>Напишите название аниме прямо в этот чат:</b>\n"
-        "<i>Например: Attack on Titan, Naruto, Bleach...</i>",
-        parse_mode="HTML",
-    )
-
-
-@dp.message(Command("list"))
-@dp.message(F.text == "📋 Мои подписки")
-async def cmd_list(message: types.Message):
-    """Выводит список всех подписок текущего пользователя."""
-    chat_id = message.chat.id
-    if not check_rate_limit(chat_id, cooldown=1.0):
-        await message.answer("⏳ Подождите секунду...")
-        return
-
+async def render_subscriptions_list(
+    chat_id: int, page: int = 0
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Рендерит страницу со списком подписок и кнопками пагинации (5 на страницу)."""
     subs = await db.get_user_subscriptions(chat_id)
-
     if not subs:
-        await message.answer(
+        return (
             "📋 <b>Ваш список отслеживания пуст.</b>\n\n"
             "Нажмите <b>«🔍 Найти аниме»</b> или просто напишите название аниме, чтобы добавить его!",
-            parse_mode="HTML",
-            reply_markup=MAIN_KEYBOARD,
+            None,
         )
-        return
 
-    text = f"📋 <b>Ваши отслеживаемые аниме ({len(subs)}):</b>\n\n"
+    page_size = 5
+    total_pages = math.ceil(len(subs) / page_size)
+    page = max(0, min(page, total_pages - 1))
+
+    start_idx = page * page_size
+    end_idx = start_idx + page_size
+    page_subs = subs[start_idx:end_idx]
+
+    text = (
+        f"📋 <b>Ваши отслеживаемые аниме ({len(subs)}):</b>\n"
+        f"<i>Страница {page + 1} из {total_pages}</i>\n\n"
+    )
     keyboard_buttons = []
 
-    for idx, s in enumerate(subs, 1):
+    for idx, s in enumerate(page_subs, start_idx + 1):
         safe_title = html.escape(s["title"])
         status = s.get("status")
         status_badge = (
@@ -327,14 +328,225 @@ async def cmd_list(message: types.Message):
             [
                 InlineKeyboardButton(
                     text=f"❌ Удалить «{safe_title[:25]}»",
-                    callback_data=f"unsub:{s['anime_id']}",
+                    callback_data=f"unsub:{s['anime_id']}:{page}",
                 )
             ]
         )
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+    if total_pages > 1:
+        nav_row = []
+        if page > 0:
+            nav_row.append(
+                InlineKeyboardButton(
+                    text="⬅️ Назад", callback_data=f"list_page:{page - 1}"
+                )
+            )
+        else:
+            nav_row.append(InlineKeyboardButton(text="⏹️", callback_data="noop"))
+
+        nav_row.append(
+            InlineKeyboardButton(
+                text=f"📄 {page + 1}/{total_pages}", callback_data="noop"
+            )
+        )
+
+        if page < total_pages - 1:
+            nav_row.append(
+                InlineKeyboardButton(
+                    text="Вперёд ➡️", callback_data=f"list_page:{page + 1}"
+                )
+            )
+        else:
+            nav_row.append(InlineKeyboardButton(text="⏹️", callback_data="noop"))
+
+        keyboard_buttons.append(nav_row)
+
+    return text, InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+
+
+@dp.callback_query(F.data == "noop")
+async def callback_noop(callback: types.CallbackQuery):
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("list_page:"))
+async def callback_list_page(callback: types.CallbackQuery):
+    chat_id = callback.message.chat.id
+    page = int(callback.data.split(":")[1])
+    text, keyboard = await render_subscriptions_list(chat_id, page=page)
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@dp.message(F.text == "🔍 Найти аниме")
+async def btn_search_prompt(message: types.Message):
+    presets_markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔥 Топ сезона", callback_data="preset:top_season"
+                ),
+                InlineKeyboardButton(
+                    text="🏆 Шедевры (8.5+)", callback_data="preset:masterpieces"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎲 Случайный онгоинг", callback_data="preset:random"
+                )
+            ],
+        ]
+    )
     await message.answer(
-        text, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=True
+        "🔎 <b>Поиск аниме</b>\n\n"
+        "Отправьте название тайтла прямо в этот чат (например: <i>Solo Leveling</i>) "
+        "или выберите готовую подборку в один клик:",
+        parse_mode="HTML",
+        reply_markup=presets_markup,
+    )
+
+
+@dp.callback_query(F.data.startswith("preset:"))
+async def callback_preset(callback: types.CallbackQuery):
+    preset_type = callback.data.split(":")[1]
+    await callback.answer()
+
+    wait_msg = await callback.message.answer("🔄 Загружаю подборку...")
+    try:
+        if preset_type == "top_season":
+            results = await anilist.get_top_season(limit=3)
+            header = "🔥 <b>Топ популярных онгоингов сезона:</b>"
+        elif preset_type == "masterpieces":
+            results = await anilist.get_masterpieces(limit=3)
+            header = "🏆 <b>Признанные шедевры аниме (рейтинг 8.5+):</b>"
+        elif preset_type == "random":
+            one = await anilist.get_random_ongoing()
+            results = [one] if one else []
+            header = "🎲 <b>Случайный свежий онгоинг для вас:</b>"
+        else:
+            results = []
+            header = ""
+    except AniListUnavailableError:
+        await wait_msg.edit_text(
+            "⚠️ <b>Сервис AniList временно недоступен</b>\n\n"
+            "Сервера каталога сейчас на обслуживании. Пожалуйста, попробуйте чуть позже.",
+            parse_mode="HTML",
+        )
+        return
+    except Exception as e:
+        capture_error(e, context="callback_preset")
+        await wait_msg.edit_text(f"❌ Ошибка загрузки подборки: {e}")
+        return
+
+    if not results:
+        await wait_msg.edit_text("😔 К сожалению, тайтлы не найдены.")
+        return
+
+    await wait_msg.delete()
+    await callback.message.answer(header, parse_mode="HTML")
+
+    for anime in results:
+        photo_url = anime.coverImage.best_quality
+        button_text = (
+            "📌 В коллекцию (Завершено)"
+            if anime.is_finished
+            else "➕ Отслеживать новые серии"
+        )
+        caption = format_anime_catalog_card(anime)
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=button_text, callback_data=f"sub:{anime.id}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🌐 Открыть на AniList",
+                        url=anime.siteUrl or f"https://anilist.co/anime/{anime.id}",
+                    )
+                ],
+            ]
+        )
+        try:
+            await callback.message.answer_photo(
+                photo=photo_url,
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            await asyncio.sleep(0.5)
+        except Exception:
+            await callback.message.answer(
+                text=caption, parse_mode="HTML", reply_markup=keyboard
+            )
+
+
+@dp.message(Command("week"))
+@dp.message(F.text == "📅 Расписание недели")
+async def btn_weekly_schedule(message: types.Message):
+    """Группирует активные онгоинги пользователя по дням недели (Пн-Вс, МСК)."""
+    chat_id = message.chat.id
+    if not check_rate_limit(chat_id, cooldown=2.0):
+        await message.answer("⏳ Подождите секунду перед следующим запросом.")
+        return
+
+    subs = await db.get_user_subscriptions(chat_id)
+    ongoing_ids = [s["anime_id"] for s in subs if s.get("status") != "FINISHED"]
+
+    if not ongoing_ids:
+        await message.answer(
+            "📅 <b>Расписание на неделю пусто</b>\n\n"
+            "У вас пока нет активных онгоингов в отслеживании (все тайтлы завершены или список пуст).\n\n"
+            "Добавьте онгоинги через <b>«🔍 Найти аниме»</b> или <b>«🔥 Топ сезона»</b>, чтобы составить персональную сетку вещания!",
+            parse_mode="HTML",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    wait_msg = await message.answer("🔄 Составляю сетку расписания на неделю...")
+    try:
+        schedules = await anilist.get_schedules_for_media_ids(ongoing_ids)
+    except AniListUnavailableError:
+        await wait_msg.edit_text(
+            "⚠️ <b>Сервис AniList временно недоступен</b>\n\n"
+            "На стороне серверов AniList сейчас ведутся технические работы. Пожалуйста, попробуйте чуть позже.",
+            parse_mode="HTML",
+        )
+        return
+    except Exception as e:
+        capture_error(e, context="btn_weekly_schedule")
+        await wait_msg.edit_text(f"❌ Ошибка получения расписания: {e}")
+        return
+
+    await wait_msg.delete()
+    formatted_text = format_weekly_schedule(schedules)
+    await message.answer(formatted_text, parse_mode="HTML")
+
+
+@dp.message(Command("list"))
+@dp.message(F.text == "📋 Мои подписки")
+async def cmd_list(message: types.Message):
+    """Выводит список всех подписок текущего пользователя с пагинацией."""
+    chat_id = message.chat.id
+    if not check_rate_limit(chat_id, cooldown=1.0):
+        await message.answer("⏳ Подождите секунду...")
+        return
+
+    text, keyboard = await render_subscriptions_list(chat_id, page=0)
+    await message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=keyboard or MAIN_KEYBOARD,
+        disable_web_page_preview=True,
     )
 
 
@@ -672,11 +884,31 @@ async def callback_unsubscribe(callback: types.CallbackQuery):
         )
         return
 
-    anime_id = int(callback.data.split(":")[1])
+    parts = callback.data.split(":")
+    anime_id = int(parts[1])
+    page = int(parts[2]) if len(parts) > 2 else 0
 
     await db.remove_subscription(chat_id, anime_id)
     await callback.answer("Удалено из отслеживания", show_alert=True)
-    await cmd_list(callback.message)
+
+    text, keyboard = await render_subscriptions_list(chat_id, page=page)
+    if keyboard:
+        try:
+            await callback.message.edit_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            await callback.message.answer(
+                text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
+    else:
+        await callback.message.edit_text(text, parse_mode="HTML")
 
 
 WEBHOOK_PATH = "/webhook"
@@ -689,6 +921,9 @@ async def setup_bot_commands():
             BotCommand(command="start", description="Перезапустить бота и меню"),
             BotCommand(command="profile", description="📊 Мой профиль и инфографика"),
             BotCommand(command="list", description="Мои отслеживаемые аниме"),
+            BotCommand(
+                command="week", description="📅 Расписание недели (сетка онгоингов)"
+            ),
             BotCommand(command="track", description="Найти аниме по названию"),
             BotCommand(
                 command="recommend", description="Что посмотреть? (Рекомендации)"

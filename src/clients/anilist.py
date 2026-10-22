@@ -1,3 +1,6 @@
+import hashlib
+import json
+import random
 import time
 from typing import Any
 
@@ -177,17 +180,108 @@ query GetUpcomingSchedules($perPage: Int) {
 """
 
 
+GRAPHQL_TOP_AIRING_QUERY = """
+query GetTopAiring($perPage: Int) {
+  Page(page: 1, perPage: $perPage) {
+    media(status: RELEASING, sort: [POPULARITY_DESC, SCORE_DESC], type: ANIME) {
+      id
+      title {
+        romaji
+        english
+      }
+      averageScore
+      popularity
+      coverImage {
+        extraLarge
+        large
+      }
+      genres
+      studios(isMain: true) {
+        nodes {
+          name
+        }
+      }
+      siteUrl
+      status
+      episodes
+    }
+  }
+}
+"""
+
+GRAPHQL_MASTERPIECES_QUERY = """
+query GetMasterpieces($perPage: Int) {
+  Page(page: 1, perPage: $perPage) {
+    media(type: ANIME, sort: SCORE_DESC, averageScore_greater: 84) {
+      id
+      title {
+        romaji
+        english
+      }
+      averageScore
+      popularity
+      coverImage {
+        extraLarge
+        large
+      }
+      genres
+      studios(isMain: true) {
+        nodes {
+          name
+        }
+      }
+      siteUrl
+      status
+      episodes
+    }
+  }
+}
+"""
+
+
 class AniListClient:
-    def __init__(self, timeout: float = 12.0):
+    def __init__(
+        self,
+        timeout: float = 12.0,
+        cache_ttl: float = 900.0,
+        max_cache_size: int = 200,
+    ):
         self.timeout = timeout
+        self.cache_ttl = cache_ttl
+        self.max_cache_size = max_cache_size
+        self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+    def clear_cache(self) -> None:
+        """Очищает оперативный TTL-кэш."""
+        self._cache.clear()
+
+    @property
+    def cache_size(self) -> int:
+        """Текущее количество записей в оперативном TTL-кэше."""
+        return len(self._cache)
 
     async def _post(
-        self, query: str, variables: dict[str, Any] | None = None
+        self,
+        query: str,
+        variables: dict[str, Any] | None = None,
+        use_cache: bool = True,
     ) -> dict[str, Any]:
         """
         Выполняет GraphQL запрос к AniList с обработкой технических регламентов,
-        таймаутов и защитой от падений при сбоях на стороне AniList.
+        In-Memory TTL-кэшированием на 15 мин и защитой от падений при сбоях на стороне AniList.
         """
+        now = time.time()
+        cache_key = None
+
+        if use_cache and self.cache_ttl > 0:
+            var_json = json.dumps(variables, sort_keys=True) if variables else ""
+            cache_key = hashlib.md5(f"{query}:{var_json}".encode()).hexdigest()
+            if cache_key in self._cache:
+                timestamp, cached_data = self._cache[cache_key]
+                if now - timestamp < self.cache_ttl:
+                    return cached_data
+                self._cache.pop(cache_key, None)
+
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
@@ -236,6 +330,13 @@ class AniListClient:
                     f"Сервис AniList временно недоступен ({first_err})"
                 )
             raise AniListAPIError(f"AniList GraphQL Error: {first_err}")
+
+        # Сохраняем в In-Memory TTL-кэш с контролем размера
+        if use_cache and cache_key and self.cache_ttl > 0:
+            if len(self._cache) >= self.max_cache_size:
+                oldest_key = min(self._cache.keys(), key=lambda k: self._cache[k][0])
+                self._cache.pop(oldest_key, None)
+            self._cache[cache_key] = (now, data)
 
         return data
 
@@ -384,3 +485,42 @@ class AniListClient:
             results.extend(fallback)
 
         return results
+
+    async def get_top_season(self, limit: int = 3) -> list[Media]:
+        """Возвращает самые популярные онгоинги текущего сезона."""
+        data = await self._post(
+            GRAPHQL_TOP_AIRING_QUERY,
+            variables={"perPage": limit},
+        )
+        raw_list = data.get("data", {}).get("Page", {}).get("media", [])
+        results: list[Media] = []
+        for raw_item in raw_list:
+            try:
+                results.append(Media.model_validate(raw_item))
+            except Exception as e:
+                print(f"⚠️ Ошибка валидации Media топ сезона: {e}")
+                continue
+        return results
+
+    async def get_masterpieces(self, limit: int = 3) -> list[Media]:
+        """Возвращает признанные шедевры с рейтингом 8.5+."""
+        data = await self._post(
+            GRAPHQL_MASTERPIECES_QUERY,
+            variables={"perPage": limit},
+        )
+        raw_list = data.get("data", {}).get("Page", {}).get("media", [])
+        results: list[Media] = []
+        for raw_item in raw_list:
+            try:
+                results.append(Media.model_validate(raw_item))
+            except Exception as e:
+                print(f"⚠️ Ошибка валидации Media шедевра: {e}")
+                continue
+        return results
+
+    async def get_random_ongoing(self) -> Media | None:
+        """Возвращает один случайный онгоинг из актуального пула популярного."""
+        pool = await self.get_top_season(limit=20)
+        if not pool:
+            return None
+        return random.choice(pool)
