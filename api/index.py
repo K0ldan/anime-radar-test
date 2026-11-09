@@ -44,10 +44,30 @@ async def app(scope, receive, send):
 
     method = scope.get("method", "GET")
     path = scope.get("path", "/")
+    # Vercel rewrite подменяет path на /api/index.py, поэтому команду установки
+    # вебхука определяем по query-параметру (path оставлен для обратной совместимости)
+    query_string = scope.get("query_string", b"").decode("utf-8", errors="ignore")
 
     # === GET запросы: Health-check и привязка вебхука ===
     if method == "GET":
-        if "/set_webhook" in path:
+        if "/set_webhook" in path or "set_webhook" in query_string:
+            # Опциональная защита эндпоинта: если задан WEBHOOK_SETUP_KEY,
+            # установка разрешена только по ссылке ?set_webhook=<ключ>
+            setup_key = os.getenv("WEBHOOK_SETUP_KEY")
+            if setup_key and f"set_webhook={setup_key}" not in query_string:
+                forbidden_body = b"Forbidden: invalid or missing setup key"
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 403,
+                        "headers": [
+                            (b"content-type", b"text/plain; charset=utf-8"),
+                            (b"content-length", str(len(forbidden_body)).encode()),
+                        ],
+                    }
+                )
+                await send({"type": "http.response.body", "body": forbidden_body})
+                return
             try:
                 await ensure_initialized()
                 headers = dict(scope.get("headers", []))
