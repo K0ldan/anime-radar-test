@@ -1,4 +1,4 @@
-# Anime Radar — Event-Driven Data Platform & Notification Pipeline
+# Anime Radar — Scheduled Release Pipeline & Telegram Bot
 
 [![Python](https://img.shields.io/badge/Python-3.12%20%7C%203.14-blue?logo=python)](https://python.org)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon.tech-green?logo=postgresql)](https://neon.tech)
@@ -6,9 +6,7 @@
 [![Sentry](https://img.shields.io/badge/Observability-Sentry.io-purple?logo=sentry)](https://sentry.io)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
-Автоматизированный event-driven пайплайн данных и интерактивный Telegram-бот для персонального отслеживания выхода новых серий аниме в реальном времени с поддержкой рейтингов, таймеров релиза и полной дедупликацией.
-
-100% бесплатная облачная инфраструктура с нулевыми затратами на содержание ($0/мес).
+Пайплайн по расписанию (GitHub Actions, каждый час) и Telegram-бот на вебхуках для персонального отслеживания выхода новых серий аниме: подписки на тайтлы, рейтинги, таймеры релизов и дедупликация уведомлений на уровне БД.
 
 ---
 
@@ -17,7 +15,7 @@
 ```mermaid
 flowchart TD
     subgraph Data Sources
-        AL[AniList GraphQL API\n90 req/min Free]
+        AL[AniList GraphQL API\n90 req/min]
     end
 
     subgraph Core Pipeline Engine
@@ -67,7 +65,7 @@ flowchart TD
 ## Стек технологий
 
 * **Язык:** Python 3.12+ / 3.14
-* **Сетевой клиент:** `httpx` (Async HTTP/2)
+* **Сетевой клиент:** `httpx` (async)
 * **Telegram Framework:** `aiogram 3.x`
 * **Валидация:** `pydantic v2`
 * **База данных:** `asyncpg` + Neon PostgreSQL (Serverless Scale-to-Zero)
