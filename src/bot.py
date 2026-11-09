@@ -264,7 +264,7 @@ async def cmd_profile(message: types.Message):
         await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     except Exception as e:
         capture_error(e, context="cmd_profile")
-        await message.answer(f"❌ Ошибка загрузки профиля: {e}")
+        await message.answer("❌ Не удалось загрузить профиль. Попробуйте позже.")
 
 
 @dp.callback_query(F.data == "btn:search")
@@ -443,7 +443,7 @@ async def callback_preset(callback: types.CallbackQuery):
         return
     except Exception as e:
         capture_error(e, context="callback_preset")
-        await wait_msg.edit_text(f"❌ Ошибка загрузки подборки: {e}")
+        await wait_msg.edit_text("❌ Не удалось загрузить подборку. Попробуйте позже.")
         return
 
     if not results:
@@ -524,7 +524,7 @@ async def btn_weekly_schedule(message: types.Message):
         return
     except Exception as e:
         capture_error(e, context="btn_weekly_schedule")
-        await wait_msg.edit_text(f"❌ Ошибка получения расписания: {e}")
+        await wait_msg.edit_text("❌ Не удалось получить расписание. Попробуйте позже.")
         return
 
     await wait_msg.delete()
@@ -623,7 +623,7 @@ async def btn_check_releases(message: types.Message):
         return
     except Exception as e:
         capture_error(e, context="btn_check_releases")
-        await wait_msg.edit_text(f"❌ Ошибка проверки расписания: {e}")
+        await wait_msg.edit_text("❌ Не удалось проверить расписание. Попробуйте позже.")
 
 
 async def perform_search(message: types.Message, query: str):
@@ -652,7 +652,7 @@ async def perform_search(message: types.Message, query: str):
         return
     except Exception as e:
         capture_error(e, context="perform_search")
-        await wait_msg.edit_text(f"❌ Ошибка поиска: {e}")
+        await wait_msg.edit_text("❌ Поиск временно недоступен. Попробуйте позже.")
         return
 
     if not results:
@@ -731,7 +731,7 @@ async def btn_recommendations(message: types.Message):
         return
     except Exception as e:
         capture_error(e, context="btn_recommendations")
-        await wait_msg.edit_text(f"❌ Ошибка подбора рекомендаций: {e}")
+        await wait_msg.edit_text("❌ Не удалось подобрать рекомендации. Попробуйте позже.")
         return
 
     if not recs:
