@@ -9,8 +9,6 @@ from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
 from dotenv import load_dotenv
 
 if sys.platform == "win32":
@@ -911,9 +909,6 @@ async def callback_unsubscribe(callback: types.CallbackQuery):
         await callback.message.edit_text(text, parse_mode="HTML")
 
 
-WEBHOOK_PATH = "/webhook"
-
-
 async def setup_bot_commands():
     """Регистрирует интерактивное меню команд в Telegram UI."""
     await bot.set_my_commands(
@@ -935,70 +930,35 @@ async def setup_bot_commands():
 
 async def on_startup():
     """Хук инициализации при старте сервиса."""
-    print("🤖 Запуск интерактивного бота Anime Radar (Production Webhook Engine)...")
+    print("🤖 Запуск интерактивного бота Anime Radar...")
     init_sentry("telegram-bot")
     await db.init_schema()
     await setup_bot_commands()
-
-    webhook_host = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("WEBHOOK_URL")
-    if webhook_host:
-        webhook_url = f"{webhook_host.rstrip('/')}{WEBHOOK_PATH}"
-        await bot.set_webhook(webhook_url, drop_pending_updates=True)
-        print(f"🚀 Telegram Webhook успешно установлен: {webhook_url}")
 
 
 async def on_shutdown():
     """Хук корректного завершения соединений."""
     print("🛑 Остановка сервиса...")
-    webhook_host = os.getenv("WEBHOOK_URL")
-    if webhook_host:
-        try:
-            await bot.delete_webhook()
-        except Exception:
-            pass
     await bot.session.close()
     await db.close()
 
 
 def main():
-    webhook_host = os.getenv("WEBHOOK_URL")
-    port = int(os.getenv("PORT", "8080"))
+    """Режим Long-Polling (локальная разработка и тестирование).
 
-    if webhook_host:
-        # === 1. Режим Webhook для внешнего сервера ===
-        app = web.Application()
+    Production-деплой живёт на Vercel Serverless (api/index.py) —
+    отдельный webhook-сервер здесь не нужен.
+    """
 
-        async def handle_ping(request):
-            return web.Response(
-                text="OK - Anime Radar Webhook Bot is active 24/7!\n",
-                content_type="text/plain",
-            )
+    async def run_local_polling():
+        await on_startup()
+        print("✅ Бот слушает сообщения в режиме Polling...")
+        try:
+            await dp.start_polling(bot)
+        finally:
+            await on_shutdown()
 
-        app.router.add_get("/", handle_ping)
-        app.router.add_get("/health", handle_ping)
-
-        dp.startup.register(on_startup)
-        dp.shutdown.register(on_shutdown)
-
-        webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-        webhook_handler.register(app, path=WEBHOOK_PATH)
-        setup_application(app, dp, bot=bot)
-
-        print(
-            f"🌐 Запуск Webhook-сервера на порту {port} (Внешний адрес: {webhook_host})..."
-        )
-        web.run_app(app, host="0.0.0.0", port=port)
-    else:
-        # === 2. Режим Long-Polling (Локальная разработка и тестирование) ===
-        async def run_local_polling():
-            await on_startup()
-            print("✅ Бот слушает сообщения в режиме Polling...")
-            try:
-                await dp.start_polling(bot)
-            finally:
-                await on_shutdown()
-
-        asyncio.run(run_local_polling())
+    asyncio.run(run_local_polling())
 
 
 if __name__ == "__main__":
